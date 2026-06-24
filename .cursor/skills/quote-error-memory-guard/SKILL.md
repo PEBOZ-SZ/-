@@ -364,6 +364,59 @@ description: >-
 - 必测项：`pytest tests/test_front_quote_confirmation.py -q`；最终确认成功见 quote_card
 - 相关文件/模块：static/app.js、server.py、tests/test_front_quote_confirmation.py
 
+### 错误模式：结构确认与报价前确认重复、A/B/D 不可见、材料明细与预览不同步
+- 发生场景：上传表格进入报价前确认；业务员编辑材料或区域字段后生成正式报价
+- 错误表现：需点两次确认（「确认结构并开始报价」后再进「报价前确认」）；只见 C 区材料表；A/B/D 客户/规格/工艺不可见；材料明细与结构预览改一处不同步；业务员改的 remark/区域/参与报价未进正式核算
+- 根因：第一次 POST 只带 `structure_confirmed` 触发 `should_require_quote_confirmation` 二次 gate；材料明细只读 brv.C 区、预览用独立 overrides 未 sync；payload 缺 remark/section_key/included_in_quote/manual_requirement_fields；`promote_quotable_rows_for_quote` 覆盖用户 excluded 行
+- 正确做法：单一 `confirmAndGenerateQuote` 同时发 `structure_confirmed`+`quote_confirmed`；页内 `buildQuotePreConfirmSectionsHtml` 展示 A/B/C/D；`getMergedPendingStructureRows`+`syncPendingStructureRowsToData` 统一材料明细与预览；保存后 sync；确认前再 sync；payload 带全字段 + `manual_requirement_fields`；merge 写 `included_in_quote`；promote 尊重 `included_in_quote===false`
+- 禁止做法：恢复两步按钮；缺字段时再渲染新确认页（应仅文本提示）；材料明细与预览各读各的数据源
+- 必测项：`pytest tests/test_front_quote_confirmation.py tests/test_merge_structure_confirmation.py -q`；`node --check static/app.js`；一次确认；A/B/C/D 可见；保存后两表同步；改参与报价后核算排除
+- 相关文件/模块：static/app.js、static/styles.css、server.py、material_row_validity.py、admin_bom_requirement_view.py、tests/test_front_quote_confirmation.py、tests/test_merge_structure_confirmation.py
+
+### 错误模式：PU拉牌/标牌类配件误按码计价
+- 发生场景：B260189 等表；PU拉牌/皮牌/标牌 kb 或表格给出 1码 × x/码
+- 错误表现：material_measure_kind=count、measure_unit=个，但正式报价仍按 1码×24.5/码=24.5元；报价偏高
+- 根因：BOM 行码口径自洽未触发维度冲突；parse_items 仍计入
+- 正确做法：`badge_unit_guard` 识别配件+码口径→待确认+exclude；有个价 normalize 为 个×元/个；全链路一致拦截
+- 必测项：`pytest tests/test_badge_unit_guard.py -q`
+- 相关文件/模块：badge_unit_guard.py、material_row_validity.py、quote_engine.py、quote_validation_gate.py、server.py
+
+### 错误模式：业务员 BOM/报价结果被误识别为客户需求表
+- 发生场景：上传业务员 BOM、报价明细、系统报价单或管理员修正 BOM 后自动报价
+- 错误表现：重复物料、错算、系统生成 BOM 再喂回报价流程污染上下文
+- 根因：上传表格未区分「客户需求表」与「BOM/报价结果表」，走 simple_bom / generic sheet parser / material_inference
+- 正确做法：`classify_uploaded_sheet_kind` 拦截 sales_bom/quote_output/admin_correction；保留附件仅参考；unknown 默认不自动报价；用户明示「客户需求表」或 `force_customer_demand` 才放行
+- 禁止做法：把含 物料名称/单价/小计/recognition_status 的系统表当需求表解析；拦截时报错中断聊天
+- 必测项：`pytest tests/test_sheet_kind_classifier.py -q`；上传 BOM 前端见「已忽略，仅作参考」；上传标准需求表不被拦截
+- 相关文件/模块：sheet_kind_classifier.py、server.py、static/app.js
+
+### 错误模式：标准客户需求表被误判为业务员 BOM（材料明细完善版/报价资料文件名）
+- 发生场景：上传含「需求表(填写区)」、A/B/C/D 分区、字段映射/下拉选项/使用说明的标准需求表；文件名含「材料明细完善版」「报价资料」或含 C 区材料明细子表
+- 错误表现：前台提示「检测到上传的是业务员 BOM/报价明细表…已作为参考附件保留」，无法进入自动报价
+- 根因：`sheet_kind_classifier` 用文件名「材料明细」或 C 区用量/单价列触发 `_has_sales_bom_features`，决策顺序早于需求模板识别
+- 正确做法：`_is_strong_standard_customer_demand` 优先放行 A/B/C/D 模板；文件名「材料明细完善/补全」「报价资料」不能单独作 BOM 依据；系统导出列/recognition_status/quote_output 特征仍拦截
+- 禁止做法：仅凭文件名「材料明细」或 C 区明细表头拦截标准需求表；降低真实 sales_bom/quote_output/admin_correction 拦截
+- 必测项：`pytest tests/test_sheet_kind_classifier.py -q`；上传 `*材料明细完善版*` 标准需求表应 `customer_demand` 且可报价；真实 BOM/报价结果仍 blocked
+- 相关文件/模块：sheet_kind_classifier.py、tests/test_sheet_kind_classifier.py
+
+### 错误模式：图片推断覆盖表格明确字段或未标待复核
+- 发生场景：客户需求表 + 包款图片；或 photo_quote / material_inference 补结构
+- 错误表现：图片推断行带单价/用量/面料规格直接参与报价；覆盖表格外料/里料/拉链
+- 根因：`mark_image_inferred_row` 未清单价/用量/规格；`demand_template=True` 时误禁或误放结构推理
+- 正确做法：图片行 `source_type=image_inferred`、`recognition_status=candidate_review`、`pricing_review_required`、`exclude_from_cost`；表格 explicit 行优先；需求表下仅允许 vision 补缺口候选项
+- 禁止做法：图片自动确定 210D/420D、精确尺寸、单价/用量/金额；不确定时新增可报价 BOM 行
+- 必测项：`pytest tests/test_sheet_kind_classifier.py -q`；图片推断行显示「推理待核」；表格字段不被覆盖
+- 相关文件/模块：photo_quote_flow.py、material_inference.py、sheet_media_enhancer.py
+
+### 错误模式：新 C 区横向明细表被旧竖向字段解析 / 需求表识别失败
+- 发生场景：标准需求表 C 区采用「类型|主材料/规格|对应核算尺寸|部位/裁片N|尺寸/数量/备注N」横向布局（如材料布局清爽版）
+- 错误表现：产品名称回落为文件名；B/C/D 区大量缺失；物料行变成「1688:jacket1 / 产品类型 / 收纳包」；未展开裁片明细
+- 根因：`extract_material_detail_rows_from_rows` 未识别「主材料/规格」表头；`materials=0` 导致 `try_parse_demand_template` 失败并走 legacy BOM 解析；`_zip_headers_to_values` 把横向表头误当竖向 C 区字段
+- 正确做法：识别横向 C 表头；按部位/裁片+尺寸/数量/备注两列一组展开明细；B 区读产品名称/款号；legacy C 字段从明细映射（面料1→外料、里布/内衬→里料、配件行 remark→拉链/拉头）；`materials_detail_rows` 非空亦视为需求表；横向布局时 `parse_sheet_items_from_payload` 仅以 detail_rows 生成 items，禁止 merge 旧扫描假物料；`enrich_requirement_fields_from_material_details` 反填外料/里料/拉链/拉头
+- 禁止做法：用上传文件名作产品名称；把部位/裁片名当材料名称；只提取主材料不展开裁片；横向 C 区仍 merge `rows_to_items` 污染 items；`面料` 子串误匹配「网布/其他面料」
+- 必测项：`pytest tests/test_horizontal_c_material_detail.py -q`；上传后 product=手提收纳包、detail_rows≥15、items 无面料1/配件/辅料、requirement_fields 含 FJ-150D记忆布/色丁布/5#树脂拉链
+- 相关文件/模块：admin_bom_requirement_view.py、demand_parser.py、sheet_parser.py、server.py
+
 ## 快速验收命令（自报项目目录）
 
 ```powershell

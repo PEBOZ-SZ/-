@@ -1,0 +1,92 @@
+# Python / test
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Secrets & local env（勿提交真实密钥）
+.env
+.env.*
+!.env.example
+!.env.prod.example
+
+# Logs
+*.log
+logs/
+
+# Data & runtime（本地库、上传、缓存、运行日志）
+data/quotes.db
+data/*.db
+data/uploads/
+data/.embedding_cache/
+data/quote_product_images/
+data/price_review/
+data/*.jsonl
+data/_dbg_sync/
+data/company_payment_accounts.json
+
+# Business exports / office files
+*.zip
+*.xlsx
+*.xls
+*.csv
+*.pdf
+
+# Temp / deploy / reports
+.tmp/
+reports/
+临时/
+缓存/
+_tmp_xlsx_dump.txt
+*_xlsx_dump*.txt
+
+# Runtime knowledge queue (local pending apply)
+knowledge_updates/*.jsonl
+
+# Local one-off analysis / repair scratch (keep tools/batch_quote_audit.py etc.)
+tools/_*
+tools/_*.txt
+
+# Pytest isolation
+tests/_pytest_data/
+
+# Virtual env & runtime locks
+.venv/
+.acceptance_runtime/
+.server.lock
+.server.lock.*
+.server.pid
+node_modules/
+
+# Local debug responses / upload snapshots
+tmp_last_*.json
+_tmp_quote_response*.json
+hidden-*.txt
+hidden-*.log
+diag-*.log
+local-server*.log
+restart*.log
+server_*.log
+
+# Local generated/runtime data
+data/
+quote_storage/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Recovery backups
+*.bak
+*.bak-*
+*.pre_recover_*.bak
+scripts/fix_wecom_nginx_proxy.sh

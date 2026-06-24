@@ -78,6 +78,253 @@ function quoteFlowIntent(payload) {
 }
 /** 特例：磁盘打开 HTML 时需手动写入 API 根，如 http://127.0.0.1:8776 */
 const LS_QUOTE_API_ORIGIN_KEY = "quote_workbench_api_origin";
+const LS_LOCAL_SALES_IDENTITY_KEY = "aq_local_sales_identity";
+
+function readLocalSalesIdentity() {
+  try {
+    const raw = localStorage.getItem(LS_LOCAL_SALES_IDENTITY_KEY);
+    if (!raw) {
+      return null;
+    }
+    const data = JSON.parse(raw);
+    return data && typeof data === "object" ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalSalesIdentity(ident) {
+  if (!ident || !ident.sales_user_id) {
+    return;
+  }
+  localStorage.setItem(
+    LS_LOCAL_SALES_IDENTITY_KEY,
+    JSON.stringify({
+      sales_user_id: ident.sales_user_id,
+      sales_user_name: ident.sales_user_name || "",
+      sales_user_code: ident.sales_user_code || "",
+      sales_user_label: ident.sales_user_label || ident.sales_user_name || "",
+      identity_source: ident.identity_source || "browser",
+      sales_rep_input: ident.sales_rep_input || "",
+    }),
+  );
+}
+
+function formatSalesRepInputFromIdentity(ident) {
+  if (!ident) {
+    return "";
+  }
+  if (ident.sales_rep_input) {
+    return String(ident.sales_rep_input).trim();
+  }
+  const code = String(ident.sales_user_code || "").trim();
+  const name = String(ident.sales_user_name || "").trim();
+  if (code && name && code !== name) {
+    return `${code} ${name}`;
+  }
+  return code || name || String(ident.sales_user_label || "").trim();
+}
+
+function appendSalesIdentityFields(payload) {
+  const out = { ...(payload || {}) };
+  const local = readLocalSalesIdentity();
+  if (local?.sales_user_id && !out.sales_user_id) {
+    out.sales_user_id = local.sales_user_id;
+    out.sales_user_name = local.sales_user_name || local.sales_user_label || "";
+    out.sales_user_code = local.sales_user_code || "";
+    out.identity_source = local.identity_source || "browser";
+  }
+  return out;
+}
+
+function isSalesIdentityRequiredResult(result) {
+  return Boolean(
+    result && (result.error === "sales_identity_required" || result.sales_identity_required),
+  );
+}
+
+let salesRepGateResolver = null;
+
+function closeSalesRepIdentityGate() {
+  const gate = document.getElementById("salesRepIdentityGate");
+  if (gate) {
+    gate.hidden = true;
+    gate.setAttribute("aria-hidden", "true");
+  }
+}
+
+function openSalesRepIdentityGate(options = {}) {
+  const gate = document.getElementById("salesRepIdentityGate");
+  const input = document.getElementById("salesRepIdentityInput");
+  const msg = document.getElementById("salesRepIdentityMessage");
+  if (!gate || !input) {
+    return Promise.reject(new Error("业务员身份弹窗未就绪"));
+  }
+  if (msg) {
+    msg.textContent =
+      options.message || "表格中未识别到业务员，请填写您的编号或姓名后继续报价。";
+  }
+  const local = readLocalSalesIdentity();
+  input.value = local?.sales_rep_input || local?.sales_user_label || "";
+  gate.hidden = false;
+  gate.setAttribute("aria-hidden", "false");
+  input.focus();
+  return new Promise((resolve, reject) => {
+    salesRepGateResolver = { resolve, reject };
+  });
+}
+
+function bindSalesRepIdentityGateUi() {
+  const gate = document.getElementById("salesRepIdentityGate");
+  const input = document.getElementById("salesRepIdentityInput");
+  const btnOk = document.getElementById("salesRepIdentityConfirm");
+  const btnCancel = document.getElementById("salesRepIdentityCancel");
+  if (!gate || !input || !btnOk || !btnCancel) {
+    return;
+  }
+  const finish = (value) => {
+    const resolver = salesRepGateResolver;
+    salesRepGateResolver = null;
+    closeSalesRepIdentityGate();
+    if (resolver) {
+      if (value == null) {
+        resolver.reject(new Error("cancelled"));
+      } else {
+        resolver.resolve(value);
+      }
+    }
+  };
+  btnOk.addEventListener("click", () => {
+    const value = String(input.value || "").trim();
+    if (!value) {
+      setComposerStatusLine("请填写业务员编号或姓名", "err");
+      input.focus();
+      return;
+    }
+    finish(value);
+  });
+  btnCancel.addEventListener("click", () => finish(null));
+  gate.addEventListener("click", (ev) => {
+    if (ev.target?.closest?.("[data-sales-rep-dismiss='1']")) {
+      finish(null);
+    }
+  });
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      btnOk.click();
+    }
+  });
+}
+
+async function bindSalesIdentity(inputOrIdent) {
+  const body =
+    typeof inputOrIdent === "string"
+      ? { sales_rep_input: inputOrIdent.trim() }
+      : {
+          sales_user_code: inputOrIdent?.sales_user_code || "",
+          sales_user_name: inputOrIdent?.sales_user_name || "",
+          sales_rep_input: inputOrIdent?.sales_rep_input || "",
+        };
+  if (!body.sales_rep_input && !body.sales_user_code && !body.sales_user_name) {
+    throw new Error("请填写业务员编号或姓名");
+  }
+  const res = await quoteFetch("/api/auth/sales-identity", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) {
+    throw new Error(data.message || data.error || "业务员身份保存失败");
+  }
+  if (body.sales_rep_input) {
+    data.sales_rep_input = body.sales_rep_input;
+  } else {
+    data.sales_rep_input = formatSalesRepInputFromIdentity(data);
+  }
+  writeLocalSalesIdentity(data);
+  state.authStatus = { ...(state.authStatus || {}), ...data };
+  renderSalesAuthBanner();
+  return data;
+}
+
+async function promptSalesRepIdentityAndBind(result) {
+  try {
+    const input = await openSalesRepIdentityGate({
+      message: result?.message || "表格中未识别到业务员，请填写您的编号或姓名后继续报价。",
+    });
+    return await bindSalesIdentity(input);
+  } catch (error) {
+    if (error instanceof Error && error.message === "cancelled") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function postQuoteWithSalesIdentityRetry(payload, loadingToken, loadingText = "正在继续报价…") {
+  let body = appendSalesIdentityFields(payload);
+  let response = await quoteFetchWithTimeout("/api/quote", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let result = await readResponseJson(response);
+  if (isSalesIdentityRequiredResult(result)) {
+    replaceLoadingByToken(loadingToken, {
+      role: "assistant",
+      type: "text",
+      text: "请先确认业务员身份…",
+      time: formatNowTime(),
+    });
+    const ident = await promptSalesRepIdentityAndBind(result);
+    if (!ident) {
+      return { cancelled: true, response, result };
+    }
+    body = {
+      ...body,
+      sales_rep_input: ident.sales_rep_input || formatSalesRepInputFromIdentity(ident),
+      sales_user_id: ident.sales_user_id,
+      sales_user_name: ident.sales_user_name,
+      sales_user_code: ident.sales_user_code || "",
+      identity_source: ident.identity_source || "manual",
+    };
+    state.messages.push({
+      role: "assistant",
+      type: "loading_quote",
+      loadingToken,
+      text: loadingText,
+      time: formatNowTime(),
+    });
+    renderMessages();
+    scrollToBottom();
+    response = await quoteFetchWithTimeout("/api/quote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    result = await readResponseJson(response);
+  }
+  return { cancelled: false, response, result };
+}
+
+async function restoreLocalSalesIdentityIfNeeded() {
+  const st = state.authStatus;
+  if (!st || st.wecom_enabled || st.authenticated) {
+    return;
+  }
+  const local = readLocalSalesIdentity();
+  if (!local?.sales_user_id) {
+    return;
+  }
+  try {
+    await bindSalesIdentity(local);
+    await fetchAuthStatus(true);
+  } catch {
+    // ignore restore errors; user can fill modal later
+  }
+}
 
 function normalizeApiOrigin(raw) {
   if (!raw || typeof raw !== "string") {
@@ -391,6 +638,8 @@ const NON_QUOTE_REPLY_TYPES = new Set([
   "process_card",
   "structure_confirmation",
   "quote_confirmation",
+  "upload_sheet_kind_blocked",
+  "upload_sheet_kind_unknown",
 ]);
 
 function isDeferredUploadHint(text) {
@@ -479,6 +728,10 @@ function statusLineForNonQuoteReply(replyType) {
       return { text: "请补充信息后继续", tone: "warn" };
     case "capability_help":
       return { text: "已说明可用能力", tone: "ok" };
+    case "upload_sheet_kind_blocked":
+      return { text: "业务员 BOM/报价表已忽略，仅作参考", tone: "warn" };
+    case "upload_sheet_kind_unknown":
+      return { text: "请确认上传表格类型", tone: "warn" };
     default:
       return { text: "本轮未生成新报价", tone: "warn" };
   }
@@ -681,7 +934,7 @@ function buildQuoteRequestPayload(prompt, attSnap, extra = {}) {
       content_base64: firstSheet.content_base64,
     };
   }
-  return payload;
+  return appendSalesIdentityFields(payload);
 }
 
 async function requestQuote(options = {}) {
@@ -763,14 +1016,18 @@ async function requestQuote(options = {}) {
 
   try {
     const payload = buildQuoteRequestPayload(prompt, attSnap);
-
-    const response = await quoteFetchWithTimeout("/api/quote", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    const result = await readResponseJson(response);
+    const post = await postQuoteWithSalesIdentityRetry(payload, loadingToken, loadingText);
+    if (post.cancelled) {
+      replaceLoadingByToken(loadingToken, {
+        role: "assistant",
+        type: "text",
+        text: "已取消：需填写业务员编号或姓名后才能继续报价。",
+        time: formatNowTime(),
+      });
+      setComposerStatusLine("请先填写业务员身份", "warn");
+      return;
+    }
+    const { response, result } = post;
     if (!response.ok) {
       if (result.llm_status) {
         state.llmStatus = result.llm_status;
@@ -800,7 +1057,7 @@ async function requestQuote(options = {}) {
           structureAddedRows: [],
           structureSelectedRowIndex: null,
           confirmedStructureGapIds: {},
-          quoteConfirmMode: true,
+          sectionFieldOverrides: {},
           quoteConfirmation: result.quote_confirmation || null,
           data: mergeStructureConfirmDataPreserveRows({}, result),
         };
@@ -811,7 +1068,7 @@ async function requestQuote(options = {}) {
           confirmToken: token,
           fileName: quoteFileLabel,
         });
-        setComposerStatusLine("请确认当前表格内容，确认后生成正式报价", "warn");
+        setComposerStatusLine("请核对 A/B/C/D 与材料明细，保存后一次确认生成正式报价", "warn");
         return;
       }
       if (result.reply_type === "structure_confirmation") {
@@ -840,7 +1097,7 @@ async function requestQuote(options = {}) {
           structureAddedRows: [],
           structureSelectedRowIndex: null,
           confirmedStructureGapIds: {},
-          quoteConfirmMode: false,
+          sectionFieldOverrides: {},
           quoteConfirmation: null,
           data: result,
         };
@@ -1744,10 +2001,7 @@ function buildQuoteCardInnerHtml(quote, fileName, msgId, cardOpts = {}) {
   const usdRate = Number.isFinite(usdRateRaw) && usdRateRaw > 0 ? usdRateRaw : 7.15;
   const toUsd = (v) => (Number.isFinite(v) ? v / usdRate : NaN);
   const fmtUsd = (v) => (Number.isFinite(v) ? `$${formatDisplayNumber(v)}` : "-");
-  const tier0CostNum = Number(quote.tiers?.[0]?.cost_before_margin ?? quote.tiers?.[0]?.total_cost);
-  const systemCostDisplay = costUsdMode
-    ? fmtUsd(toUsd(tier0CostNum))
-    : quote.system_cost_text || "-";
+  const systemCostDisplay = quote.system_cost_text || "-";
   const costHeaderText = costUsdMode ? "成本 / 件 (USD)" : "成本 / 件";
 
   const taxHeaderTh = quoteIsExwCostVatMode(quote)
@@ -1998,7 +2252,544 @@ function getStructureConfirmationTableRows(data) {
       : Array.isArray(data.items_preview)
         ? data.items_preview
         : [];
-  return rows.filter((r) => r && typeof r === "object" && !isReferenceOnlyRowName(r.name));
+  if (rows.length) {
+    return rows.filter((r) => r && typeof r === "object" && !isReferenceOnlyRowName(r.name));
+  }
+  const displayRows = Array.isArray(data?.display_material_rows)
+    ? data.display_material_rows
+    : [];
+  if (displayRows.length) {
+    return displayRows
+      .map((row) => ({
+        ...row,
+        name: row.name || row.standard_name_code || row.standard_name || "",
+        spec: row.spec || row.calculation_size || row.calc_size || "",
+        usage: row.usage || row.total_usage || row.quoted_usage || "",
+        calc_note: row.calc_note || row.calc_method || row.remark || "",
+        area: row.area || row.section_key || "C",
+        section_key: row.section_key || row.area || "C",
+      }))
+      .filter((r) => r && typeof r === "object" && !isReferenceOnlyRowName(r.name));
+  }
+  return [];
+}
+
+const QUOTE_PRE_CONFIRM_SECTION_KEYS = ["A", "B", "C", "D"];
+
+const QUOTE_SECTION_FIELD_IMPACTS = {
+  A: {
+    currency: "影响报价币种",
+    tax_13: "影响含税口径",
+    margin_pct: "影响利润率",
+    quote_unit: "影响报价口径",
+    price_type: "影响出厂/FOB",
+    fx_usd_rmb: "影响汇率换算",
+    delivery_requirement: "影响交期说明",
+    fee_items: "影响费用包含项",
+    fee_amount: "影响附加费用",
+  },
+  B: {
+    product_name_model: "影响产品名称",
+    product_type: "影响产品类型与结构规则",
+    length_cm: "影响尺寸核算",
+    width_cm: "影响尺寸核算",
+    height_cm: "影响尺寸核算",
+    structure_description: "影响结构缺项识别",
+  },
+  D: {
+    logo_method: "影响 LOGO 工艺成本",
+    logo_content: "影响 LOGO 工艺说明",
+    key_process: "影响加工工艺费",
+    special_process_note: "影响特殊工艺/风险提示",
+  },
+};
+
+function getBomRequirementSections(data) {
+  const brv = data?.bom_requirement_view;
+  const sections = Array.isArray(brv?.sections) ? brv.sections : [];
+  return sections.filter((section) =>
+    QUOTE_PRE_CONFIRM_SECTION_KEYS.includes(String(section?.key || "").trim()),
+  );
+}
+
+function isRequirementFieldValueMissing(value) {
+  const text = String(value ?? "").trim();
+  return !text || text === "无" || text === "-" || text === "—";
+}
+
+function requirementFieldSourceBadge(field) {
+  const source = String(field?.source || "").trim();
+  if (field?.inferred) {
+    return '<span class="req-field-badge req-field-badge--inferred">结构推断</span>';
+  }
+  if (source === "excel") {
+    return '<span class="req-field-badge req-field-badge--excel">表格识别</span>';
+  }
+  if (source === "c_material_detail") {
+    return '<span class="req-field-badge req-field-badge--detail">材料明细</span>';
+  }
+  if (source === "structure_description") {
+    return '<span class="req-field-badge req-field-badge--structure">结构说明</span>';
+  }
+  if (source === "quote") {
+    return '<span class="req-field-badge req-field-badge--quote">已保存</span>';
+  }
+  return '<span class="req-field-badge req-field-badge--empty">未识别</span>';
+}
+
+function requirementFieldImpactText(sectionKey, fieldKey) {
+  const impacts = QUOTE_SECTION_FIELD_IMPACTS[String(sectionKey || "").trim()] || {};
+  return impacts[String(fieldKey || "").trim()] || "";
+}
+
+function mergedRequirementFieldValue(field, overrides, sectionKey) {
+  const key = `${String(sectionKey || "").trim()}.${String(field?.key || "").trim()}`;
+  if (overrides && Object.prototype.hasOwnProperty.call(overrides, key)) {
+    return String(overrides[key] ?? "").trim();
+  }
+  return String(field?.value ?? "").trim();
+}
+
+function quoteMaterialMergeNormText(value) {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "");
+}
+
+function quoteMaterialCalcCore(row) {
+  const raw = row?.calc_note != null && String(row.calc_note).trim()
+    ? row.calc_note
+    : row?.calc_method;
+  const text = quoteMaterialMergeNormText(raw);
+  const aliases = [
+    ["裁片面积", "piece_area"],
+    ["面积表", "piece_area"],
+    ["面积合计", "piece_area"],
+    ["主料按裁片", "piece_area"],
+    ["拉链", "zipper"],
+    ["按长度", "length"],
+    ["长度", "length"],
+    ["按个数", "count"],
+    ["个数", "count"],
+    ["按数量", "count"],
+  ];
+  for (const [marker, core] of aliases) {
+    if (text.includes(quoteMaterialMergeNormText(marker))) {
+      return core;
+    }
+  }
+  return text;
+}
+
+function quoteMaterialMergeKey(row) {
+  return [
+    quoteMaterialMergeNormText(row?.name),
+    quoteMaterialMergeNormText(row?.spec),
+    quoteMaterialMergeNormText(row?.unit_price),
+    quoteMaterialMergeNormText(row?.section_key || row?.area || ""),
+    quoteMaterialCalcCore(row),
+  ].join("|");
+}
+
+function quoteMaterialSameNameSignature(row) {
+  return [
+    quoteMaterialMergeNormText(row?.spec),
+    quoteMaterialMergeNormText(row?.unit_price),
+    quoteMaterialMergeNormText(row?.section_key || row?.area || ""),
+    quoteMaterialCalcCore(row),
+  ].join("|");
+}
+
+function parseQuoteMaterialDecimal(value) {
+  const text = String(value ?? "").normalize("NFKC").replaceAll(",", "").trim();
+  const match = text.match(/[+-]?\d+(?:\.\d+)?/);
+  if (!match) {
+    return null;
+  }
+  const num = Number.parseFloat(match[0]);
+  return Number.isFinite(num) ? num : null;
+}
+
+function parseQuoteMaterialUsage(value) {
+  const text = String(value ?? "").normalize("NFKC").replaceAll(",", "").trim();
+  const match = text.match(/^\s*([+-]?\d+(?:\.\d+)?)\s*([^\d\s]+)\s*$/);
+  if (!match) {
+    return null;
+  }
+  const num = Number.parseFloat(match[1]);
+  const unit = String(match[2] || "").trim();
+  if (!Number.isFinite(num) || !unit) {
+    return null;
+  }
+  return { num, unit };
+}
+
+function formatQuoteMaterialNumber(value) {
+  if (!Number.isFinite(value)) {
+    return "";
+  }
+  return String(Number(value.toFixed(6))).replace(/\.0+$/, "");
+}
+
+function appendUniqueText(existing, additions) {
+  const parts = [];
+  [String(existing || ""), ...additions].forEach((raw) => {
+    String(raw || "")
+      .split(/[;；]\s*/)
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .forEach((p) => {
+        if (!parts.includes(p)) {
+          parts.push(p);
+        }
+      });
+  });
+  return parts.join("；");
+}
+
+function mergeDuplicateQuoteMaterialRows(rows) {
+  if (!Array.isArray(rows) || rows.length < 2) {
+    return Array.isArray(rows) ? rows : [];
+  }
+  const buckets = new Map();
+  rows.forEach((raw, idx) => {
+    if (!raw || typeof raw !== "object") {
+      return;
+    }
+    const row = { ...raw };
+    const key = quoteMaterialMergeKey(row);
+    if (!key.split("|")[0]) {
+      buckets.set(`__blank_${idx}`, [{ idx, row }]);
+      return;
+    }
+    if (!buckets.has(key)) {
+      buckets.set(key, []);
+    }
+    buckets.get(key).push({ idx, row });
+  });
+  const byFirstIndex = new Map();
+  const dropped = new Set();
+  for (const group of buckets.values()) {
+    if (group.length < 2) {
+      byFirstIndex.set(group[0].idx, group[0].row);
+      continue;
+    }
+    const rowsInGroup = group.map((g) => g.row);
+    const keeper = { ...rowsInGroup[0] };
+    const usages = rowsInGroup.map((r) => String(r.usage || "").trim());
+    const parsed = usages.map(parseQuoteMaterialUsage);
+    const canSumUsage =
+      parsed.length > 0 &&
+      parsed.every(Boolean) &&
+      new Set(parsed.map((p) => quoteMaterialMergeNormText(p.unit))).size === 1;
+    if (canSumUsage) {
+      const totalUsage = parsed.reduce((sum, p) => sum + p.num, 0);
+      keeper.usage = `${formatQuoteMaterialNumber(totalUsage)}${parsed[0].unit}`;
+      if (keeper.total_usage != null) {
+        keeper.total_usage = keeper.usage;
+      }
+    } else {
+      keeper.usage = usages[0] || String(keeper.usage || "");
+      keeper.remark = appendUniqueText(keeper.remark, [
+        `由 ${group.length} 条同名行合并，原用量分别为 ${usages.map((u) => u || "-").join("、")}`,
+      ]);
+    }
+    const amountValues = rowsInGroup.map((r) => parseQuoteMaterialDecimal(r.amount));
+    if (amountValues.every((v) => v != null)) {
+      const total = amountValues.reduce((sum, v) => sum + v, 0);
+      keeper.amount = Number(total.toFixed(2));
+      keeper.amount_text = `${total.toFixed(2)}元`;
+    } else {
+      const usage = parseQuoteMaterialUsage(keeper.usage);
+      const price = parseQuoteMaterialDecimal(keeper.unit_price);
+      if (usage && price != null) {
+        const total = usage.num * price;
+        keeper.amount = Number(total.toFixed(2));
+        keeper.amount_text = `${total.toFixed(2)}元`;
+      }
+    }
+    const notes = rowsInGroup
+      .map((r) => String(r.calc_note || r.calc_method || "").trim())
+      .filter(Boolean);
+    if (notes.length) {
+      keeper.calc_note = appendUniqueText("", notes);
+      keeper.calc_method = keeper.calc_note;
+    }
+    const remarks = rowsInGroup.map((r) => String(r.remark || "").trim()).filter(Boolean);
+    if (remarks.length && canSumUsage) {
+      keeper.remark = appendUniqueText(keeper.remark, remarks);
+    }
+    keeper.merged_duplicate_count = group.length;
+    keeper.merge_hint = `已合并 ${group.length} 条重复材料行`;
+    keeper.source_row_indices = group.map((g) => g.idx);
+    keeper.merged_from_rows = rowsInGroup.map((r) => ({ ...r }));
+    byFirstIndex.set(group[0].idx, keeper);
+    group.slice(1).forEach((g) => dropped.add(g.idx));
+  }
+  const out = [];
+  rows.forEach((_row, idx) => {
+    if (!dropped.has(idx) && byFirstIndex.has(idx)) {
+      out.push(byFirstIndex.get(idx));
+    }
+  });
+  const byName = new Map();
+  out.forEach((row) => {
+    const key = quoteMaterialMergeNormText(row.name);
+    if (!key) {
+      return;
+    }
+    if (!byName.has(key)) {
+      byName.set(key, []);
+    }
+    byName.get(key).push(row);
+  });
+  for (const sameNameRows of byName.values()) {
+    const sigs = new Set(sameNameRows.map(quoteMaterialSameNameSignature));
+    if (sameNameRows.length < 2 || sigs.size < 2) {
+      continue;
+    }
+    sameNameRows.forEach((row) => {
+      row.needs_manual_confirm = true;
+      row.recognition_status = row.recognition_status || "same_name_review";
+      row.recognition_reason = appendUniqueText(row.recognition_reason, [
+        "同名不同规格/单价/区域/计算方式，需人工确认",
+      ]);
+    });
+  }
+  return out;
+}
+
+function getMergedPendingStructureRows(pending) {
+  if (!pending) {
+    return [];
+  }
+  const rows = getPendingStructureRows(pending.data, pending);
+  const overrides =
+    pending.structureRowOverrides && typeof pending.structureRowOverrides === "object"
+      ? pending.structureRowOverrides
+      : {};
+  const mergedRows = rows
+    .map((baseRow, idx) => mergedStructureConfirmationRow(rows, overrides, idx))
+    .filter((row) => row && row.deleted !== true && String(row.recognition_status || "").trim() !== "ignored");
+  return mergeDuplicateQuoteMaterialRows(mergedRows);
+}
+
+function syncPendingStructureRowsToData(pend) {
+  if (!pend) {
+    return;
+  }
+  const merged = getMergedPendingStructureRows(pend);
+  const snapshot = merged.map((row) => ({ ...row }));
+  pend.data = pend.data && typeof pend.data === "object" ? pend.data : {};
+  pend.data.items_confirmation = snapshot;
+  pend.data.items_preview = snapshot;
+  const brv = pend.data.bom_requirement_view;
+  if (brv && typeof brv === "object" && Array.isArray(brv.sections)) {
+    pend.data.bom_requirement_view = {
+      ...brv,
+      sections: brv.sections.map((section) => {
+        if (String(section?.key || "") !== "C") {
+          return section;
+        }
+        return {
+          ...section,
+          detail_rows: snapshot.map((row, idx) => ({
+            type: String(row.type || row.material_type || `物料${idx + 1}`),
+            standard_name_code: String(row.name || ""),
+            calculation_size: String(row.spec || ""),
+            remark: String(row.remark || row.calc_note || row.calc_method || ""),
+            usage: String(row.usage || ""),
+            unit_price: String(row.unit_price || ""),
+            section_key: String(row.section_key || row.area || "C"),
+            included_in_quote:
+              row.included_in_quote !== false &&
+              row.amount_in_cost !== false &&
+              row.exclude_from_cost !== true,
+            source: String(row.source_type || row.source || "BOM明细"),
+          })),
+        };
+      }),
+    };
+  }
+}
+
+function buildManualRequirementFieldsFromPending(pending) {
+  const sections = getBomRequirementSections(pending?.data);
+  const overrides =
+    pending?.sectionFieldOverrides && typeof pending.sectionFieldOverrides === "object"
+      ? pending.sectionFieldOverrides
+      : {};
+  const out = {};
+  for (const section of sections) {
+    const sectionKey = String(section?.key || "").trim();
+    if (!sectionKey || sectionKey === "C") {
+      continue;
+    }
+    const fields = Array.isArray(section.fields) ? section.fields : [];
+    for (const field of fields) {
+      const fieldKey = String(field?.key || "").trim();
+      if (!fieldKey) {
+        continue;
+      }
+      const merged = mergedRequirementFieldValue(field, overrides, sectionKey);
+      if (!isRequirementFieldValueMissing(merged)) {
+        out[fieldKey] = merged;
+        if (fieldKey === "product_name_model") {
+          out["产品名称/款号"] = merged;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function normalizeQuoteQuantityList(raw) {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const out = [];
+  for (const value of raw) {
+    const qty = Number.parseInt(String(value ?? "").replace(/,/g, "").trim(), 10);
+    if (Number.isFinite(qty) && qty > 0 && !out.includes(qty)) {
+      out.push(qty);
+    }
+  }
+  return out;
+}
+
+function extractQuoteQuantityValue(value) {
+  const text = String(value ?? "").normalize("NFKC").replace(/,/g, "").trim();
+  if (!text) {
+    return null;
+  }
+  const slash = text.match(/[\/／]\s*(\d+)/);
+  if (slash) {
+    return Number.parseInt(slash[1], 10);
+  }
+  if (/^\d+\s*(片|个|条|套|pcs?|PCS)$/.test(text)) {
+    return null;
+  }
+  const nums = Array.from(text.matchAll(/\d+/g)).map((m) => Number.parseInt(m[0], 10));
+  if (!nums.length) {
+    return null;
+  }
+  return nums.length > 1 ? Math.max(...nums) : nums[0];
+}
+
+function extractQuoteQuantitiesFromFieldMap(fields) {
+  if (!fields || typeof fields !== "object") {
+    return [];
+  }
+  const out = [];
+  for (const [key, value] of Object.entries(fields)) {
+    const normKey = String(key || "").normalize("NFKC").replace(/\s+/g, "").toLowerCase();
+    if (!/^数量\d+$/.test(normKey) && !/^(quantity_?|qty)\d+$/.test(normKey)) {
+      continue;
+    }
+    const qty = extractQuoteQuantityValue(value);
+    if (Number.isFinite(qty) && qty > 0 && !out.includes(qty)) {
+      out.push(qty);
+    }
+  }
+  return out.sort((a, b) => a - b);
+}
+
+function getPendingQuoteQuantities(pending) {
+  const data = pending?.data && typeof pending.data === "object" ? pending.data : {};
+  const fieldCandidates = [
+    data.quote_params?.F,
+    data.sheet_parse?.quote_params?.F,
+    data.requirement_fields,
+    data.sheet_parse?.requirement_fields,
+  ];
+  for (const fields of fieldCandidates) {
+    const quantities = extractQuoteQuantitiesFromFieldMap(fields);
+    if (quantities.length > 0) {
+      return quantities;
+    }
+  }
+  const candidates = [
+    data.quantities,
+    data.sheet_parse?.quantities,
+    data.quote_payload?.quantities,
+    pending?.quoteConfirmation?.quantities,
+  ];
+  for (const raw of candidates) {
+    const quantities = normalizeQuoteQuantityList(raw);
+    if (quantities.length > 0) {
+      return quantities;
+    }
+  }
+  return [];
+}
+
+function buildQuotePreConfirmSectionsHtml(data, token, pend) {
+  const sections = getBomRequirementSections(data);
+  if (!sections.length) {
+    return "";
+  }
+  const tok = String(token || "").trim();
+  const isPending = pend && pend.token === tok;
+  const editing = isPending ? Boolean(pend.structureEditMode) : false;
+  const overrides =
+    isPending && pend.sectionFieldOverrides && typeof pend.sectionFieldOverrides === "object"
+      ? pend.sectionFieldOverrides
+      : {};
+  const blocks = sections
+    .map((section) => {
+      const sectionKey = String(section?.key || "").trim();
+      const fields = Array.isArray(section.fields) ? section.fields : [];
+      const fieldRows = fields
+        .map((field) => {
+          const fieldKey = String(field?.key || "").trim();
+          const label = escapeHtml(String(field?.label || fieldKey || "-"));
+          const merged = mergedRequirementFieldValue(field, overrides, sectionKey);
+          const missing = isRequirementFieldValueMissing(merged);
+          const impact = requirementFieldImpactText(sectionKey, fieldKey);
+          const impactHtml = impact
+            ? `<span class="req-field-impact${missing ? " req-field-impact--warn" : ""}">${escapeHtml(impact)}</span>`
+            : "";
+          const editable =
+            isPending && editing && sectionKey !== "C" && Boolean(QUOTE_SECTION_FIELD_IMPACTS[sectionKey]?.[fieldKey]);
+          const valueHtml = editable
+            ? `<input type="text" class="structure-confirm-cell-input req-field-input" data-section-field="${escapeHtml(sectionKey)}.${escapeHtml(fieldKey)}" value="${escapeHtml(merged)}" placeholder="待补充" />`
+            : `<span class="req-field-value${missing ? " req-field-value--missing" : ""}">${escapeHtml(missing ? "无" : merged)}</span>`;
+          return `<div class="req-field-row${missing ? " req-field-row--missing" : ""}">
+            <div class="req-field-label">${label}${requirementFieldSourceBadge(field)}</div>
+            <div class="req-field-body">${valueHtml}${impactHtml}</div>
+          </div>`;
+        })
+        .join("");
+      const missingCount = fields.filter((field) =>
+        isRequirementFieldValueMissing(mergedRequirementFieldValue(field, overrides, sectionKey)),
+      ).length;
+      const summary =
+        missingCount > 0
+          ? `<p class="req-section-summary req-section-summary--warn">${missingCount} 项无数据${sectionKey === "A" || sectionKey === "B" || sectionKey === "D" ? "，可能影响报价口径或工艺识别" : ""}</p>`
+          : `<p class="req-section-summary req-section-summary--ok">已识别 ${fields.length} 项</p>`;
+      const detailRows =
+        sectionKey === "C" && Array.isArray(section.detail_rows) && section.detail_rows.length
+          ? `<p class="muted req-section-detail-note">材料行明细见下方「材料明细 / 结构预览」，与编辑保存后的数据同步。</p>`
+          : "";
+      return `<section class="quote-preconfirm-section quote-preconfirm-section--${escapeHtml(sectionKey)}">
+        <div class="quote-preconfirm-section-head">
+          <h4>${escapeHtml(String(section.title || sectionKey))}</h4>
+          ${summary}
+        </div>
+        <div class="quote-preconfirm-fields">${fieldRows || `<p class="muted">暂无字段</p>`}</div>
+        ${detailRows}
+      </section>`;
+    })
+    .join("");
+  return `<section class="structure-confirm-section quote-preconfirm-sections">
+    <div class="structure-confirm-section-head">
+      <h4>报价前确认（A/B/C/D）</h4>
+      <p class="muted quote-preconfirm-lead">请核对客户信息、产品规格、材料与工艺是否识别完整；表格没有的数据会显示「无」及是否影响报价。</p>
+    </div>
+    <div class="quote-preconfirm-grid">${blocks}</div>
+  </section>`;
 }
 
 function quoteConfirmFieldValue(field) {
@@ -2021,6 +2812,51 @@ function isQuoteConfirmationResult(result) {
     result.reply_type === "quote_confirmation" ||
     result.error === "quote_confirmation_incomplete"
   );
+}
+
+function isQuoteValidationBlockedResult(result) {
+  if (!result || typeof result !== "object") {
+    return false;
+  }
+  return (
+    result.error === "quote_validation_blocked" ||
+    result.validation_status === "blocked" ||
+    (result.quote_mode === "production_mode" && Array.isArray(result.validation_errors))
+  );
+}
+
+function formatQuoteValidationErrors(result) {
+  const errors = Array.isArray(result?.validation_errors) ? result.validation_errors : [];
+  if (!errors.length) {
+    return result?.message || result?.error || "Production quote validation failed.";
+  }
+  return errors
+    .slice(0, 8)
+    .map((err) => {
+      if (!err || typeof err !== "object") {
+        return String(err || "").trim();
+      }
+      const path = String(err.path || "").trim();
+      const code = String(err.code || "").trim();
+      const msg = String(err.message || "").trim();
+      const head = path ? `[${path}] ` : "";
+      return `${head}${msg || code || "validation error"}`;
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function handleQuoteValidationBlocked(result, loadingToken) {
+  const detail = formatQuoteValidationErrors(result);
+  const message = detail
+    ? `正式报价校验未通过：\n${detail}`
+    : result?.message || "正式报价校验未通过。";
+  replaceLoadingByToken(loadingToken, {
+    role: "assistant",
+    type: "text",
+    text: message,
+  });
+  setComposerStatusLine(message.replace(/\s+/g, " ").slice(0, 180), "err");
 }
 
 function handleFinalQuoteConfirmationBlocked(pending, result, loadingToken) {
@@ -2274,23 +3110,19 @@ function syncStructureConfirmToolbarUi(token) {
     saveBtn.classList.toggle("btn-structure-sc-save-ready", editing && dirty);
     saveBtn.classList.toggle("btn-structure-sc-save-idle", editing && !dirty);
   }
-  const confirmBtn = card.querySelector(".btn-structure-confirm, [data-quote-confirm-submit]");
+  const confirmBtn = card.querySelector(".btn-structure-confirm, [data-quote-pre-confirm-submit]");
   if (confirmBtn) {
     confirmBtn.disabled = editing || !savedOk;
     confirmBtn.title = editing || !savedOk ? "请先保存明细修改" : "";
   }
   const hint = card.querySelector(".structure-confirm-actions-hint");
   if (hint) {
-    const quoteConfirmMode = Boolean(pend.quoteConfirmMode);
     hint.textContent =
       editing || !savedOk
         ? dirty || editing
           ? "请先保存修改后再确认"
           : "请先「保存」后再确认。"
-        : quoteConfirmMode
-          ? String(pend.data?.assistant_message || "").trim() ||
-            "请核对表格中的单价/用量，确认后生成正式报价。"
-          : "确认后将按当前表格内容进行正式计价。";
+        : "确认后将按当前保存的数据生成正式报价；缺字段时仅提示具体缺失项。";
   }
 }
 
@@ -2449,7 +3281,7 @@ function structurePreviewRowFieldFromDom(inp) {
     return {};
   }
   const field = String(inp.getAttribute("data-structure-field") || "").trim();
-  if (!field || !["name", "spec", "usage", "unit_price", "calc_note"].includes(field)) {
+  if (!field || !["name", "spec", "usage", "unit_price", "calc_note", "remark", "section_key"].includes(field)) {
     return {};
   }
   const raw = inp.value != null ? String(inp.value).trim() : "";
@@ -2575,6 +3407,12 @@ function addStructurePreviewRow(token) {
     amount: "",
     calc_note: "",
     calc_method: "",
+    remark: "",
+    section_key: "C",
+    area: "C",
+    included_in_quote: true,
+    amount_in_cost: true,
+    exclude_from_cost: false,
     added: true,
   };
   const added = Array.isArray(pend.structureAddedRows) ? pend.structureAddedRows.slice() : [];
@@ -2623,33 +3461,55 @@ function saveStructurePreviewEdits(token) {
     }
     nextOverrides[rowIdx][field] = raw;
   }
+  const includedInputs = card.querySelectorAll("[data-structure-row-included]");
+  for (const el of includedInputs) {
+    const rowIdx = el.getAttribute("data-structure-row-index");
+    if (rowIdx == null || Number.isNaN(Number.parseInt(rowIdx, 10))) {
+      continue;
+    }
+    if (!nextOverrides[rowIdx]) {
+      nextOverrides[rowIdx] = {};
+    }
+    nextOverrides[rowIdx].included_in_quote = Boolean(el.checked);
+    nextOverrides[rowIdx].amount_in_cost = Boolean(el.checked);
+    nextOverrides[rowIdx].exclude_from_cost = !el.checked;
+  }
+  const sectionInputs = card.querySelectorAll("[data-section-field]");
+  const nextSectionOverrides =
+    pend.sectionFieldOverrides && typeof pend.sectionFieldOverrides === "object"
+      ? { ...pend.sectionFieldOverrides }
+      : {};
+  for (const el of sectionInputs) {
+    const key = String(el.getAttribute("data-section-field") || "").trim();
+    if (!key) {
+      continue;
+    }
+    nextSectionOverrides[key] = el.value != null ? String(el.value).trim() : "";
+  }
+  pend.sectionFieldOverrides = nextSectionOverrides;
   pend.structureRowOverrides = nextOverrides;
+  syncPendingStructureRowsToData(pend);
   pend.structureEditMode = false;
   pend.structureSavedForQuote = true;
   pend.structureDirty = false;
   pend.structureSelectedRowIndex = null;
   renderStructureConfirmView();
-  const savedHint = pend.quoteConfirmMode
-    ? "明细已保存，可点击「确认并生成正式报价」"
-    : "明细已保存，可点击「确认结构并开始报价」";
-  setComposerStatusLine(savedHint, "ok");
+  setComposerStatusLine("修改已保存，可点击「确认并生成正式报价」", "ok");
 }
 
 function buildStructureConfirmationItemsForQuote(pending) {
-  const data = pending?.data || {};
-  const rows = getPendingStructureRows(data, pending);
-  const overrides =
-    pending && pending.structureRowOverrides && typeof pending.structureRowOverrides === "object"
-      ? pending.structureRowOverrides
-      : {};
+  const rows = getMergedPendingStructureRows(pending);
   if (!rows.length) {
     return [];
   }
-  return rows.map((baseRow, idx) => {
-    const merged =
-      mergedStructureConfirmationRow(rows, overrides, idx) ||
-      (baseRow && typeof baseRow === "object" ? baseRow : {});
+  return rows.map((merged, idx) => {
     const calcTxt = merged.calc_note != null ? merged.calc_note : merged.calc_method != null ? merged.calc_method : "";
+    const remarkTxt = merged.remark != null ? String(merged.remark) : "";
+    const sectionKey = String(merged.section_key || merged.area || "C").trim().toUpperCase() || "C";
+    const included =
+      merged.included_in_quote !== false &&
+      merged.amount_in_cost !== false &&
+      merged.exclude_from_cost !== true;
     const patch = {
       index: idx,
       name: String(merged.name != null ? merged.name : "").trim(),
@@ -2658,7 +3518,28 @@ function buildStructureConfirmationItemsForQuote(pending) {
       unit_price: String(merged.unit_price != null ? merged.unit_price : "").trim(),
       calc_note: String(calcTxt || "").trim(),
       calc_method: String(calcTxt || "").trim(),
+      remark: String(remarkTxt || calcTxt || "").trim(),
+      section_key: sectionKey,
+      area: sectionKey,
+      included_in_quote: included,
+      amount_in_cost: included,
+      exclude_from_cost: !included,
     };
+    if (merged.merged_duplicate_count) {
+      patch.merged_duplicate_count = Number(merged.merged_duplicate_count) || undefined;
+      patch.merge_hint = String(merged.merge_hint || `已合并 ${merged.merged_duplicate_count} 条重复材料行`);
+      if (Array.isArray(merged.source_row_indices)) {
+        patch.source_row_indices = merged.source_row_indices.slice();
+      }
+      if (Array.isArray(merged.merged_from_rows)) {
+        patch.merged_from_rows = merged.merged_from_rows.map((row) => ({ ...row }));
+      }
+    }
+    if (merged.needs_manual_confirm) {
+      patch.needs_manual_confirm = true;
+      patch.recognition_status = String(merged.recognition_status || "same_name_review");
+      patch.recognition_reason = String(merged.recognition_reason || "同名不同规格/单价/区域/计算方式，需人工确认");
+    }
     if (merged.from_structure_gap_hint) {
       patch.from_structure_gap_hint = true;
       patch.confirmation_source = "structure_confirmed";
@@ -2681,14 +3562,26 @@ function buildStructureConfirmationItemsForQuote(pending) {
         patch.source = "ai";
       }
     }
-    if (merged.deleted === true) {
-      patch.deleted = true;
+    if (included) {
+      patch.source = "user_input";
+      patch.confirmation_source = "structure_confirmed";
+      delete patch.usage_ai;
+      delete patch.unit_price_ai;
+      delete patch.amount_ai;
+      patch.usage_source = "user_input";
+      patch.unit_price_source = "user_input";
+      patch.amount_source = "user_input";
+      patch.field_sources = {
+        ...(merged.field_sources && typeof merged.field_sources === "object" ? merged.field_sources : {}),
+        usage: "user_input",
+        unit_price: "user_input",
+        amount: "user_input",
+      };
+      patch.pricing_review_required = false;
     }
-    // 结构确认表无小计列：勿把模型旧 amount 带给正式报价，避免只改单价仍按旧小计核算
     return patch;
   });
 }
-
 function ensurePendingStructureGapState(pend) {
   if (!pend) {
     return;
@@ -2954,12 +3847,6 @@ function buildStructureConfirmActionsHint(pend, { editing, savedOk, dirty }) {
   if (editing || !savedOk) {
     return dirty || editing ? "请先保存修改后再确认" : "请先「保存」后再确认。";
   }
-  if (pend?.quoteConfirmMode) {
-    return (
-      String(pend.data?.assistant_message || "").trim() ||
-      "请核对表格中的单价/用量，确认后生成正式报价。"
-    );
-  }
   const incompleteGaps = getIncompleteStructureGapRows(pend);
   if (incompleteGaps.length > 0) {
     return "仍有缺项未能自动估算，请补充用量/单价或取消勾选后再报价。";
@@ -2972,7 +3859,7 @@ function buildStructureConfirmActionsHint(pend, { editing, savedOk, dirty }) {
   if (confirmedGapCount > 0) {
     return `已加入 ${confirmedGapCount} 项结构缺项到明细表，保存后可生成正式报价。`;
   }
-  return "确认后将按当前表格内容进行正式计价；未勾选的缺项仅作风险提示。";
+  return "确认后将按当前保存的数据生成正式报价；缺字段时仅提示具体缺失项。";
 }
 
 function getUncoveredStructureGapHints(pend) {
@@ -3136,7 +4023,164 @@ function isValidStructureMaterialDetailRow(row) {
   return Boolean(name) && !["无", "-", "—"].includes(name);
 }
 
-function buildStructureMaterialDetailRows(data) {
+function normalizeMaterialDisplayKeyPart(value) {
+  return String(value || "").trim().replace(/\s+/g, "").toLowerCase();
+}
+
+function sumMaterialUsageTexts(values) {
+  const totals = new Map();
+  const order = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const text = String(value == null ? "" : value).trim();
+    if (!text || text === "-" || text === "—") continue;
+    const m = text.match(/^(\d+(?:\.\d+)?)\s*([^\d\s]+)$/);
+    if (!m) continue;
+    const unit = m[2];
+    if (!totals.has(unit)) {
+      totals.set(unit, 0);
+      order.push(unit);
+    }
+    totals.set(unit, totals.get(unit) + Number(m[1]));
+  }
+  if (order.length !== 1) return "";
+  const unit = order[0];
+  const total = totals.get(unit);
+  return `${Number(total.toFixed(4)).toString()}${unit}`;
+}
+
+function mergeMaterialDisplaySummary(baseSummary, incomingSummary, groupId, row) {
+  const base = baseSummary && typeof baseSummary === "object" ? { ...baseSummary } : {};
+  const incoming = incomingSummary && typeof incomingSummary === "object" ? incomingSummary : {};
+  const mergeList = (key) => {
+    const vals = [
+      ...(Array.isArray(base[key]) ? base[key] : []),
+      ...(Array.isArray(incoming[key]) ? incoming[key] : []),
+    ].map((x) => String(x || "").trim()).filter(Boolean);
+    base[key] = [...new Set(vals)];
+  };
+  base.material_id = groupId;
+  base.material_name = base.material_name || row.standard_name_code || row.standard_name || "";
+  base.material_type = base.material_type || row.type || "";
+  base.calc_size_text = base.calc_size_text || row.calculation_size || "—";
+  base.source = base.source || row.source || "C区材料明细";
+  base.pieces = [
+    ...(Array.isArray(base.pieces) ? base.pieces : []),
+    ...(Array.isArray(incoming.pieces) ? incoming.pieces : []),
+  ];
+  mergeList("covered_parts");
+  mergeList("pending_parts");
+  mergeList("excluded_parts");
+  mergeList("review_hints");
+  base.summary_text = base.summary_text || incoming.summary_text || row.remark || "";
+  base.display_summary = base.display_summary || incoming.display_summary || null;
+  base.is_measurable = Boolean(base.is_measurable || incoming.is_measurable);
+  base.is_area_measurable = Boolean(base.is_area_measurable || incoming.is_area_measurable);
+  return base;
+}
+
+function buildGroupedMaterialDetailRowsForDisplay(data, rows) {
+  const sourceRows = (Array.isArray(rows) ? rows : []).filter(isValidStructureMaterialDetailRow);
+  if (sourceRows.length < 2) return sourceRows;
+  const lookup = buildMaterialSummaryLookup(data);
+  const buckets = new Map();
+  const order = [];
+  sourceRows.forEach((row, idx) => {
+    const name = String(row.standard_name_code || row.standard_name || row.name || "").trim();
+    const size = String(row.calculation_size || row.calc_size || "").trim();
+    const key = `${normalizeMaterialDisplayKeyPart(name)}::`;
+    if (!buckets.has(key)) {
+      order.push(key);
+      buckets.set(key, {
+        rows: [],
+        summaries: [],
+        parts: [],
+        usages: [],
+        sizes: [],
+      });
+    }
+    const bucket = buckets.get(key);
+    const summary = lookupMaterialPieceSummary(lookup, row, idx);
+    bucket.rows.push(row);
+    if (summary) bucket.summaries.push(summary);
+    bucket.parts.push(row.piece_part || row.part_name || row.usage_part || row.remark || "");
+    bucket.usages.push(row.total_usage || row.usage || row.quoted_usage || row.usage_text || "");
+    bucket.sizes.push(size);
+  });
+  return order.map((key, idx) => {
+    const bucket = buckets.get(key);
+    if (!bucket || bucket.rows.length === 1) return bucket?.rows?.[0];
+    const first = bucket.rows[0];
+    const parts = [...new Set(bucket.parts.map((p) => String(p || "").trim()).filter((p) => p && p !== "-" && p !== "—"))];
+    const sizes = [...new Set(bucket.sizes.map((s) => String(s || "").trim()).filter((s) => s && s !== "-" && s !== "—"))];
+    const totalUsage = sumMaterialUsageTexts(bucket.usages) || materialDetailFirstUsableText(bucket.usages);
+    const groupId = `client_material_display_${idx + 1}`;
+    const mergedSummary = bucket.summaries.reduce(
+      (acc, summary) => mergeMaterialDisplaySummary(acc, summary, groupId, first),
+      null,
+    );
+    return {
+      ...first,
+      calculation_size: sizes.length === 1 ? sizes[0] : (sizes.length ? sizes.join("、") : "无"),
+      usage: totalUsage || first.usage || "",
+      total_usage: totalUsage || first.total_usage || first.usage || "",
+      quantity: materialDetailFirstUsableText([
+        first.quantity_display,
+        first.piece_count_display,
+        materialDetailPieceQuantityCandidate(first.quantity),
+      ]),
+      quantity_display: materialDetailFirstUsableText([
+        first.quantity_display,
+        first.piece_count_display,
+        materialDetailPieceQuantityCandidate(first.quantity),
+      ]),
+      piece_count_display: first.piece_count_display || "",
+      pieces_count: first.pieces_count,
+      parts,
+      parts_text: parts.join("、"),
+      row_count: bucket.rows.length,
+      raw_rows: bucket.rows,
+      _material_id: groupId,
+      material_piece_summary: mergedSummary || undefined,
+    };
+  }).filter(Boolean);
+}
+
+function buildStructureMaterialDetailRows(data, pending) {
+  if (pending) {
+    const merged = getMergedPendingStructureRows(pending);
+    if (merged.length) {
+      const pendingRows = merged
+        .map((row, idx) => ({
+          type: String(row.type || row.material_type || `物料${idx + 1}`),
+          standard_name_code: String(row.name || ""),
+          calculation_size: String(row.spec || ""),
+          usage: String(row.usage || ""),
+          total_usage: String(row.total_usage || row.usage || ""),
+          quantity: String(row.quantity || ""),
+          quantity_display: String(row.quantity_display || ""),
+          piece_count_display: String(row.piece_count_display || ""),
+          pieces_count: row.pieces_count,
+          unit_price: String(row.unit_price || ""),
+          remark: String(row.remark || row.calc_note || row.calc_method || ""),
+          parts: Array.isArray(row.parts) ? row.parts : [],
+          parts_text: String(row.parts_text || ""),
+          raw_rows: Array.isArray(row.raw_rows) ? row.raw_rows : undefined,
+          material_piece_summary: row.material_piece_summary,
+          section_key: String(row.section_key || row.area || "C"),
+          included_in_quote:
+            row.included_in_quote !== false &&
+            row.amount_in_cost !== false &&
+            row.exclude_from_cost !== true,
+          source: String(row.source_type || row.source || "BOM明细"),
+        }))
+        .filter(isValidStructureMaterialDetailRow);
+      return buildGroupedMaterialDetailRowsForDisplay(data, pendingRows);
+    }
+  }
+  const displayRows = Array.isArray(data?.display_material_rows) ? data.display_material_rows : [];
+  if (displayRows.length) {
+    return displayRows.filter(isValidStructureMaterialDetailRow);
+  }
   const brv = data?.bom_requirement_view;
   if (brv && typeof brv === "object") {
     const direct = brv.materials_detail_rows;
@@ -3212,6 +4256,9 @@ function lookupMaterialPieceSummary(lookup, row, index) {
   if (!lookup) {
     return null;
   }
+  if (row?.material_piece_summary && typeof row.material_piece_summary === "object") {
+    return row.material_piece_summary;
+  }
   const materialId = String(row?._material_id || "").trim();
   if (materialId && lookup.byMaterialId.has(materialId)) {
     return lookup.byMaterialId.get(materialId);
@@ -3263,25 +4310,83 @@ function materialDetailTotalUsageText(summary, row) {
       return String(ms.spec_text);
     }
   }
-  const usage = String(row?.usage || row?.quoted_usage || "").trim();
+  const usage = materialDetailFirstUsableText([
+    row?.total_usage,
+    row?.usage,
+    row?.quoted_usage,
+    row?.usage_text,
+  ]);
   return usage || "-";
 }
 
-function materialDetailQuantityText(summary) {
+function materialDetailFirstUsableText(values) {
+  const list = Array.isArray(values) ? values : [];
+  for (const value of list) {
+    const text = String(value == null ? "" : value).trim();
+    if (text && text !== "—" && text !== "-") {
+      return text;
+    }
+  }
+  return "";
+}
+
+function materialDetailPieceQuantityCandidate(value) {
+  const text = String(value == null ? "" : value).trim();
+  if (!text || text === "—" || text === "-") {
+    return "";
+  }
+  if (/缺少片数|缺片数/.test(text)) {
+    return "缺少片数";
+  }
+  if (/待核|待复核|待确认|待片数|缺失/.test(text)) {
+    return text;
+  }
+  const pieceMatch = text.match(/^(\d+(?:\.\d+)?)\s*片(?:\+待核)?$/);
+  if (pieceMatch) {
+    return pieceMatch[1];
+  }
+  if (/^\d+(?:\.\d+)?$/.test(text)) {
+    return text;
+  }
+  return "";
+}
+
+function materialDetailRowQuantityText(row) {
+  return materialDetailFirstUsableText([
+    row?.quantity_display,
+    row?.piece_count_display,
+    row?.pieces_count != null ? `${row.pieces_count}片` : "",
+    materialDetailPieceQuantityCandidate(row?.quantity),
+    materialDetailPieceQuantityCandidate(row?.piece_quantity),
+    materialDetailPieceQuantityCandidate(row?.bom_quantity),
+    materialDetailPieceQuantityCandidate(row?.qty),
+  ]);
+}
+
+function materialDetailQuantityText(summary, row) {
+  const rowQty = materialDetailRowQuantityText(row);
+  if (rowQty) {
+    return rowQty;
+  }
   if (!summary) {
-    return "-";
+    return "缺少片数，待复核";
   }
   const ms = summary.measure_summary;
   if (ms && ms.quantity != null && String(ms.quantity).trim() !== "") {
-    return String(ms.quantity);
+    return String(ms.quantity).trim();
   }
   const pieces = Array.isArray(summary.pieces) ? summary.pieces : [];
   const valid = pieces.filter((piece) => piece && piece.status !== "pending" && Number(piece.qty) > 0);
+  const pendingCount = pieces.filter((piece) => piece && piece.status === "pending").length;
   if (!valid.length) {
-    return "-";
+    return pendingCount > 0 ? "缺少片数，待复核" : "缺少片数，待复核";
   }
   const total = valid.reduce((sum, piece) => sum + Number(piece.qty || 0), 0);
-  return total > 0 ? String(total) : "-";
+  if (total <= 0) {
+    return "缺少片数，待复核";
+  }
+  const totalText = Number(total.toFixed(4)).toString();
+  return pendingCount > 0 ? `已识别${totalText}片，${pendingCount}项待核` : totalText;
 }
 
 function materialDetailSizeText(summary, row) {
@@ -3316,25 +4421,43 @@ function renderMaterialPieceTableRowHtml(piece, index) {
   if (!piece || typeof piece !== "object") {
     return "";
   }
-  const formula = String(piece.formula_text || piece.formula || piece.formula_key || "-");
-  const subtotal =
+  const formula = materialDetailFirstUsableText([piece.formula_text, piece.formula]) || "缺少公式，待复核";
+  const sizeText = materialDetailFirstUsableText([piece.size_text]) || "缺少尺寸";
+  const qtyText = materialDetailFirstUsableText([
+    piece.quantity_display,
+    piece.piece_count_display,
+    piece.status !== "pending" && piece.qty != null ? String(piece.qty) : "",
+  ].map(materialDetailPieceQuantityCandidate)) || "缺少片数";
+  const subtotal = materialDetailFirstUsableText([
+    piece.subtotal_display,
+    piece.area_display,
     piece.total_area_cm2 != null && piece.status !== "pending"
       ? formatAreaM2FromCm2(piece.total_area_cm2)
-      : "-";
+      : "",
+  ]) || "缺少尺寸/片数";
   return `<tr>
     <td>${index + 1}</td>
-    <td>${escapeHtml(String(piece.piece || "-"))}</td>
+    <td>${escapeHtml(String(piece.piece || "缺少名称，待复核"))}</td>
     <td>${escapeHtml(formula)}</td>
-    <td>${escapeHtml(String(piece.size_text || "-"))}</td>
-    <td>${escapeHtml(String(piece.qty != null ? piece.qty : "-"))}</td>
+    <td>${escapeHtml(sizeText)}</td>
+    <td>${escapeHtml(qtyText)}</td>
     <td>${escapeHtml(subtotal)}</td>
-    <td>${escapeHtml(String(piece.source || "-"))}</td>
-    <td>${escapeHtml(String(piece.status_label || piece.status || "-"))}</td>
-    <td>${escapeHtml(String(piece.note || "-"))}</td>
+    <td>${escapeHtml(String(piece.source || "来源待复核"))}</td>
+    <td>${escapeHtml(String(piece.status_label || piece.status || "待复核"))}</td>
+    <td>${escapeHtml(String(piece.note || "缺少说明，待复核"))}</td>
   </tr>`;
 }
 
 function renderMaterialAreaExpandedBodyHtml(summary, row, pieces) {
+  const rowParts =
+    Array.isArray(row?.parts) && row.parts.length
+      ? row.parts
+      : String(row?.parts_text || "").trim()
+        ? String(row.parts_text).split(/[、,，]/).map((x) => x.trim()).filter(Boolean)
+        : [];
+  const partsLine = rowParts.length
+    ? `<p class="mat-area-detail-line"><strong>部位：</strong>${escapeHtml(rowParts.join("、"))}</p>`
+    : "";
   const covered =
     Array.isArray(summary?.covered_parts) && summary.covered_parts.length
       ? `<p class="mat-area-detail-line"><strong>覆盖范围：</strong>${escapeHtml(summary.covered_parts.join("、"))}</p>`
@@ -3377,7 +4500,7 @@ function renderMaterialAreaExpandedBodyHtml(summary, row, pieces) {
     ? `<div class="mat-area-pieces-wrap">
         <table class="mat-area-pieces-table">
           <thead><tr>
-            <th>#</th><th>裁片/部位</th><th>公式</th><th>尺寸/代入</th><th>片数</th><th>小计(m²)</th><th>来源</th><th>状态</th><th>说明</th>
+            <th>#</th><th>名称/裁片/部位</th><th>公式</th><th>尺寸</th><th>片数</th><th>小计(m²)</th><th>来源</th><th>状态</th><th>说明</th>
           </tr></thead>
           <tbody>${pieceRows}</tbody>
         </table>
@@ -3386,6 +4509,7 @@ function renderMaterialAreaExpandedBodyHtml(summary, row, pieces) {
   return `<div class="mat-area-expanded-body">
     ${calcSizeLine}
     ${structureSizeLine}
+    ${partsLine}
     ${covered}
     ${pending}
     ${excluded}
@@ -3453,7 +4577,7 @@ function renderMaterialDetailRowGroupHtml(row, summary, token, idx) {
   const badges = materialDetailRiskBadges(summary);
   const size = escapeHtml(materialDetailSizeText(summary, row));
   const totalUsage = escapeHtml(materialDetailTotalUsageText(summary, row));
-  const qty = escapeHtml(materialDetailQuantityText(summary));
+  const qty = escapeHtml(materialDetailQuantityText(summary, row));
   const loss = escapeHtml(materialDetailLossRateText(summary));
   const hasAreaDetail =
     summary &&
@@ -3514,8 +4638,13 @@ function renderMaterialDetailTableSection(data, rows, token) {
   </section>`;
 }
 
-function renderStructureMaterialDetailSection(data, token) {
-  const rows = buildStructureMaterialDetailRows(data);
+function renderStructureMaterialDetailSection(data, token, pending) {
+  const pend =
+    pending ||
+    (state.pendingStructureConfirm && state.pendingStructureConfirm.token === String(token || "").trim()
+      ? state.pendingStructureConfirm
+      : null);
+  const rows = buildStructureMaterialDetailRows(data, pend);
   if (!rows.length) {
     return "";
   }
@@ -3569,14 +4698,10 @@ function buildStructureConfirmationHtml(data, token) {
   const pend = state.pendingStructureConfirm;
   const tok = String(token || "").trim();
   const isPending = pend && pend.token === tok;
-  const rows = getPendingStructureRows(data, isPending ? pend : null);
+  const rows = isPending ? getMergedPendingStructureRows(pend) : mergeDuplicateQuoteMaterialRows(getStructureConfirmationTableRows(data));
   const editing = isPending ? Boolean(pend.structureEditMode) : false;
   const savedOk = isPending ? Boolean(pend.structureSavedForQuote) : true;
   const dirty = isPending ? Boolean(pend.structureDirty) : false;
-  const overrides =
-    isPending && pend.structureRowOverrides && typeof pend.structureRowOverrides === "object"
-      ? pend.structureRowOverrides
-      : {};
   const selectedIdx =
     isPending && editing && pend.structureSelectedRowIndex != null ? Number(pend.structureSelectedRowIndex) : null;
 
@@ -3584,7 +4709,7 @@ function buildStructureConfirmationHtml(data, token) {
 
   const body = rows
     .map((r, i) => {
-      const mr = mergedStructureConfirmationRow(rows, overrides, i);
+      const mr = r && typeof r === "object" ? r : {};
       if (mr.deleted === true) {
         return "";
       }
@@ -3593,6 +4718,12 @@ function buildStructureConfirmationHtml(data, token) {
       const us = mr.usage != null ? String(mr.usage) : "";
       const up = mr.unit_price != null ? String(mr.unit_price) : "";
       const calcTxt = mr.calc_note != null ? mr.calc_note : mr.calc_method != null ? mr.calc_method : "";
+      const remarkTxt = mr.remark != null ? String(mr.remark) : "";
+      const sectionKey = String(mr.section_key || mr.area || "C").trim().toUpperCase() || "C";
+      const included =
+        mr.included_in_quote !== false &&
+        mr.amount_in_cost !== false &&
+        mr.exclude_from_cost !== true;
       const recStatus = String(mr.recognition_status || "").trim();
       const gapPending =
         mr.from_structure_gap_hint && structureGapRowHasAiEstimate(mr)
@@ -3604,6 +4735,10 @@ function buildStructureConfirmationHtml(data, token) {
       const recReason = String(mr.recognition_reason || "").trim();
       const recReasonHtml = recReason
         ? `<span class="structure-recognition-reason">${escapeHtml(recReason)}</span>`
+        : "";
+      const mergeHint = String(mr.merge_hint || "").trim();
+      const mergeHintHtml = mergeHint
+        ? `<span class="structure-recognition-reason structure-merge-hint">${escapeHtml(mergeHint)}</span>`
         : "";
       const ignoredCls = recStatus === "ignored" ? " structure-confirm-data-row-ignored" : "";
       const selectedCls = selectedIdx === i ? " structure-confirm-data-row-selected" : "";
@@ -3621,7 +4756,7 @@ function buildStructureConfirmationHtml(data, token) {
               value="${escapeHtml(nm)}"${roAttr} placeholder="物料名称" />
           </div>
         </td>
-        <td class="structure-recognition-cell">${recBadge}${recReasonHtml}</td>
+        <td class="structure-recognition-cell">${recBadge}${recReasonHtml}${mergeHintHtml}</td>
         <td>
           <div class="structure-confirm-spec-grid">
             <div class="structure-confirm-field-line">
@@ -3644,6 +4779,21 @@ function buildStructureConfirmationHtml(data, token) {
           <textarea class="structure-confirm-cell-textarea" name="calc_note-${i}" rows="2" autocomplete="off" data-structure-field="calc_note" data-structure-row-field data-structure-row-index="${i}"
             ${editing ? "" : "readonly"}>${escapeHtml(calcTxt)}</textarea>
         </td>
+        <td>
+          <input type="text" class="structure-confirm-cell-input" name="remark-${i}" autocomplete="off" data-structure-field="remark" data-structure-row-field data-structure-row-index="${i}"
+            value="${escapeHtml(remarkTxt)}"${roAttr} placeholder="备注" />
+        </td>
+        <td>
+          <select class="structure-confirm-cell-input structure-confirm-section-select" name="section_key-${i}" data-structure-field="section_key" data-structure-row-field data-structure-row-index="${i}"${editing ? "" : " disabled"}>
+            ${["A", "B", "C", "D"].map((key) => `<option value="${key}"${sectionKey === key ? " selected" : ""}>${key}</option>`).join("")}
+          </select>
+        </td>
+        <td class="structure-confirm-included-cell">
+          <label class="structure-confirm-included-label">
+            <input type="checkbox" data-structure-row-included data-structure-row-index="${i}"${included ? " checked" : ""}${editing ? "" : " disabled"} />
+            <span>${included ? "参与" : "不参与"}</span>
+          </label>
+        </td>
       </tr>`;
     })
     .join("");
@@ -3652,38 +4802,32 @@ function buildStructureConfirmationHtml(data, token) {
   const saveDisabled = editing ? "" : " disabled";
   const saveBtnClass = editing ? (dirty ? " btn-structure-sc-save-ready" : " btn-structure-sc-save-idle") : "";
   const deleteDisabled = editing && selectedIdx != null ? "" : " disabled";
-  const quoteConfirmMode = isPending && Boolean(pend.quoteConfirmMode);
   const confirmHint = isPending
     ? buildStructureConfirmActionsHint(pend, { editing, savedOk, dirty })
-    : "确认后将按当前表格内容进行正式计价；未勾选的缺项仅作风险提示。";
-  const confirmBtnHtml = quoteConfirmMode
-    ? `<button type="button" class="btn-structure-confirm btn-quote-confirm-final"${confirmDisabled}
-              data-quote-confirm-submit="${escapeHtml(tok)}"
+    : "确认后将按当前保存的数据生成正式报价。";
+  const confirmBtnHtml = `<button type="button" class="btn-structure-confirm btn-quote-confirm-final"${confirmDisabled}
+              data-quote-pre-confirm-submit="${escapeHtml(tok)}"
               ${!savedOk || editing ? ' title="请先保存明细修改"' : ""}>
               确认并生成正式报价
-            </button>`
-    : `<button type="button" class="btn-structure-confirm"${confirmDisabled}
-              data-structure-confirm-token="${escapeHtml(tok)}"
-              ${!savedOk || editing ? ' title="请先保存明细修改"' : ""}>
-              确认结构并开始报价
             </button>`;
   const activeRowCount = rows.filter((_, i) => {
-    const mr = mergedStructureConfirmationRow(rows, overrides, i);
+    const mr = rows[i] && typeof rows[i] === "object" ? rows[i] : {};
     return mr.deleted !== true && String(mr.recognition_status || "").trim() !== "ignored";
   }).length;
 
   return `
     <div class="structure-confirm-card" data-structure-card-token="${escapeHtml(tok)}">
-      <p class="assistant-tag">结构确认</p>
-      <h3>${escapeHtml(data.title || "结构确认后再报价")}</h3>
-      <p class="structure-confirm-lead">系统已解析表格结构，但还没有跑正式最终报价。请先确认下面的产品结构、用量、单价和计算方式。</p>
+      <p class="assistant-tag">报价前确认</p>
+      <h3>${escapeHtml(data.title || "报价前确认")}</h3>
+      <p class="structure-confirm-lead">请一次性核对 A/B/C/D 区域、材料明细与结构预览；保存后点击「确认并生成正式报价」，缺字段时仅提示具体缺失项。</p>
       <div class="structure-confirm-summary">
         <div><span>文件</span><strong>${escapeHtml(data.file_name || "上传表格")}</strong></div>
         <div><span>产品</span><strong>${escapeHtml(data.product_name || "-")}</strong></div>
         <div><span>物料行</span><strong>${escapeHtml(String(activeRowCount || rows.length || data.item_count || 0))}</strong></div>
       </div>
+      ${buildQuotePreConfirmSectionsHtml(data, tok, isPending ? pend : null)}
       ${buildStructureChecklistConfirmPreviewHtml(data, tok, isPending ? pend : null)}
-      ${renderStructureMaterialDetailSection(data, tok)}
+      ${renderStructureMaterialDetailSection(data, tok, isPending ? pend : null)}
       <section class="structure-confirm-section structure-confirm-workspace">
         <div class="structure-confirm-edit-shell">
           <div class="structure-confirm-toolbar-sticky">
@@ -3705,8 +4849,8 @@ function buildStructureConfirmationHtml(data, token) {
           </div>
           <div class="table-wrap structure-confirm-table-wrap">
             <table class="structure-confirm-table">
-              <thead><tr><th>物料</th><th>识别状态</th><th>规格 / 用量</th><th>单价</th><th>计算方式</th></tr></thead>
-              <tbody>${body || `<tr><td colspan="5">未解析到可展示物料行</td></tr>`}</tbody>
+              <thead><tr><th>物料</th><th>识别状态</th><th>规格 / 用量</th><th>单价</th><th>计算方式</th><th>备注</th><th>区域</th><th>参与报价</th></tr></thead>
+              <tbody>${body || `<tr><td colspan="8">未解析到可展示物料行</td></tr>`}</tbody>
             </table>
           </div>
           <div class="structure-confirm-actions structure-confirm-actions-sticky">
@@ -3970,6 +5114,11 @@ function renderLlmStatus() {
       els.llmStatus.className = "model-status";
       return;
     }
+    if (String(status.error || "").startsWith("http_403")) {
+      els.llmStatus.textContent = `AI补全不可用，已按表格/规则解析继续（${modelLabel}）：${detail}`;
+      els.llmStatus.className = "model-status error";
+      return;
+    }
     els.llmStatus.textContent = `AI 模型状态：已接入（${modelLabel}），调用失败：${detail}`;
     els.llmStatus.className = "model-status error";
     return;
@@ -3979,6 +5128,11 @@ function renderLlmStatus() {
     if (isTransientLlmError(lastErr)) {
       els.llmStatus.textContent = `AI 模型状态：已接入（${modelLabel}），最近接口波动：${detail}`;
       els.llmStatus.className = "model-status";
+      return;
+    }
+    if (lastErr.startsWith("http_403")) {
+      els.llmStatus.textContent = `AI补全不可用，已按表格/规则解析继续（${modelLabel}）：${detail}`;
+      els.llmStatus.className = "model-status error";
       return;
     }
     els.llmStatus.textContent = `AI 模型状态：已接入（${modelLabel}），最近调用失败：${detail}`;
@@ -4112,7 +5266,7 @@ function formatLlmError(error, status) {
     return `http_401（API Key 无效/过期，或 Key 与 Base URL 不匹配${suffix}）`;
   }
   if (text.startsWith("http_403")) {
-    return `http_403（当前 Key 无权限调用该模型${suffix}）`;
+    return `http_403（当前 Key 无权限调用该模型；不影响表格/规则解析${suffix}）`;
   }
   if (text.startsWith("http_402")) {
     return `http_402（可能与账户付费/余额不足有关${suffix}）`;
@@ -6313,19 +7467,19 @@ function focusTrialMaterialInput() {
   els.userPrompt.focus();
 }
 
-async function confirmStructureAndQuote(btn) {
-  const token = btn?.getAttribute("data-structure-confirm-token") || "";
+async function confirmAndGenerateQuote(btn) {
+  const token =
+    btn?.getAttribute("data-quote-pre-confirm-submit") ||
+    btn?.getAttribute("data-quote-confirm-submit") ||
+    btn?.getAttribute("data-structure-confirm-token") ||
+    "";
   const pending = state.pendingStructureConfirm;
   if (!pending || pending.token !== token) {
-    addMessage("assistant", "结构确认已过期，请重新上传表格。");
-    return;
-  }
-  if (pending.quoteConfirmMode) {
-    addMessage("assistant", "当前处于报价确认阶段，请点击「确认并生成正式报价」。");
+    addMessage("assistant", "报价前确认已过期，请重新上传表格。");
     return;
   }
   if (pending.structureEditMode || !pending.structureSavedForQuote) {
-    addMessage("assistant", "请先点击「保存」，保存明细修改后再开始报价。");
+    addMessage("assistant", "请先点击「保存」，保存修改后再生成正式报价。");
     return;
   }
   const incompleteGaps = getIncompleteStructureGapRows(pending);
@@ -6344,125 +7498,7 @@ async function confirmStructureAndQuote(btn) {
     return;
   }
   setRequesting(true);
-  setComposerStatusLine("已确认结构，正在生成正式报价…", "busy");
-  btn.disabled = true;
-  btn.textContent = "正在生成报价…";
-  const loadingToken = newLoadingToken();
-  state.messages.push({
-    role: "assistant",
-    type: "loading_quote",
-    loadingToken,
-    text: "已确认结构，正在核算正式报价…",
-    time: formatNowTime(),
-  });
-  renderMessages();
-  scrollToBottom();
-  try {
-    const patchItems = buildStructureConfirmationItemsForQuote(pending);
-    const aiEstimateCount = countStructureGapAiEstimateRows(pending);
-    const payloadExtra = {
-      structure_confirmed: true,
-      structure_confirmed_by_user: true,
-      allow_estimate_with_incomplete_items: true,
-    };
-    if (aiEstimateCount > 0) {
-      payloadExtra.structure_ai_estimate_count = aiEstimateCount;
-    }
-    if (patchItems.length > 0) {
-      payloadExtra.structure_confirmation_items = patchItems;
-      payloadExtra.items = patchItems.filter((row) => row && row.deleted !== true);
-    }
-    if (pending.data?.structure_checklist) {
-      payloadExtra.structure_checklist = pending.data.structure_checklist;
-    }
-    ensurePendingStructureGapState(pending);
-    const confirmedGapIds = getConfirmedStructureGapIdList(pending);
-    if (confirmedGapIds.length > 0) {
-      payloadExtra.confirmed_structure_gap_ids = confirmedGapIds;
-    }
-    if (Array.isArray(pending.data?.structure_gap_hints) && pending.data.structure_gap_hints.length > 0) {
-      payloadExtra.structure_gap_hints = pending.data.structure_gap_hints;
-    }
-    const attSnap = Array.isArray(pending.attachments)
-      ? pending.attachments.map((a) => ({ ...a }))
-      : [];
-    const payload = buildQuoteRequestPayload(pending.prompt || "确认结构并报价", attSnap, payloadExtra);
-    const response = await quoteFetchWithTimeout("/api/quote", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const result = await readResponseJson(response);
-    if (isQuoteConfirmationResult(result)) {
-      enterQuoteConfirmModeFromResult(pending, result, loadingToken);
-      return;
-    }
-    if (!response.ok) {
-      throw new Error(result.message || result.error || `请求失败（HTTP ${response.status}）`);
-    }
-    if (result.quote_ready === false) {
-      replaceLoadingByToken(loadingToken, {
-        role: "assistant",
-        type: "text",
-        text: result.assistant_message || "结构已确认，但仍未生成报价，请检查表格数据。",
-      });
-      return;
-    }
-    state.pendingStructureConfirm = null;
-    applyLlmResponseMeta(result);
-    const primaryMsgId = newQuoteMsgId();
-    replaceLoadingByToken(loadingToken, {
-      role: "assistant",
-      type: "quote_card",
-      subtype: "primary",
-      fileName: pending.fileName || "",
-      data: result,
-      msgId: primaryMsgId,
-    });
-    if (result.quote_id) {
-      state.sessionContext = {
-        currentQuoteId: result.quote_id,
-        fileName: pending.fileName || "",
-        quoteData: result,
-        primaryQuoteMsgId: primaryMsgId,
-      };
-    }
-    syncPricingGateSnapshotFromQuote(result);
-    setComposerStatusLine("结构已确认，正式报价已生成", "ok");
-  } catch (error) {
-    const message = humanizeQuoteFetchError(error instanceof Error ? error : new Error(String(error)));
-    replaceLoadingByToken(loadingToken, {
-      role: "assistant",
-      type: "text",
-      text: `确认结构后生成报价失败：${message}`,
-    });
-    setComposerStatusLine(`生成报价失败：${message}`, "err");
-  } finally {
-    setRequesting(false);
-    if (state.pendingStructureConfirm && state.pendingStructureConfirm.token === token) {
-      renderMessages();
-      scrollToBottom();
-    }
-  }
-}
-
-async function confirmFinalQuoteFromStructureTable(btn) {
-  const token = btn?.getAttribute("data-quote-confirm-submit") || "";
-  const pending = state.pendingStructureConfirm;
-  if (!pending || pending.token !== token) {
-    addMessage("assistant", "报价确认已过期，请重新上传表格。");
-    return;
-  }
-  if (!pending.quoteConfirmMode) {
-    addMessage("assistant", "请先完成结构确认。");
-    return;
-  }
-  if (pending.structureEditMode || !pending.structureSavedForQuote) {
-    addMessage("assistant", "请先点击「保存」，保存明细修改后再生成正式报价。");
-    return;
-  }
-  setRequesting(true);
-  setComposerStatusLine("正在确认报价输入并生成正式报价…", "busy");
+  setComposerStatusLine("正在确认并生成正式报价…", "busy");
   btn.disabled = true;
   btn.textContent = "正在生成报价…";
   const loadingToken = newLoadingToken();
@@ -6476,7 +7512,10 @@ async function confirmFinalQuoteFromStructureTable(btn) {
   renderMessages();
   scrollToBottom();
   try {
+    syncPendingStructureRowsToData(pending);
     const patchItems = buildStructureConfirmationItemsForQuote(pending);
+    const manualFields = buildManualRequirementFieldsFromPending(pending);
+    const confirmedQuantities = getPendingQuoteQuantities(pending);
     const aiEstimateCount = countStructureGapAiEstimateRows(pending);
     const payloadExtra = {
       structure_confirmed: true,
@@ -6491,6 +7530,12 @@ async function confirmFinalQuoteFromStructureTable(btn) {
     if (patchItems.length > 0) {
       payloadExtra.structure_confirmation_items = patchItems;
       payloadExtra.items = patchItems.filter((row) => row && row.deleted !== true);
+    }
+    if (Object.keys(manualFields).length > 0) {
+      payloadExtra.manual_requirement_fields = manualFields;
+    }
+    if (confirmedQuantities.length > 0) {
+      payloadExtra.quantities = confirmedQuantities;
     }
     payloadExtra.quote_confirmation =
       pending.quoteConfirmation || pending.data?.quote_confirmation || null;
@@ -6508,15 +7553,29 @@ async function confirmFinalQuoteFromStructureTable(btn) {
     const attSnap = Array.isArray(pending.attachments)
       ? pending.attachments.map((a) => ({ ...a }))
       : [];
-    const payload = buildQuoteRequestPayload(pending.prompt || "确认报价输入", attSnap, payloadExtra);
-    const response = await quoteFetchWithTimeout("/api/quote", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const result = await readResponseJson(response);
+    const payload = buildQuoteRequestPayload(pending.prompt || "确认并生成正式报价", attSnap, payloadExtra);
+    const post = await postQuoteWithSalesIdentityRetry(
+      payload,
+      loadingToken,
+      "已确认业务员身份，正在生成正式报价…",
+    );
+    if (post.cancelled) {
+      replaceLoadingByToken(loadingToken, {
+        role: "assistant",
+        type: "text",
+        text: "已取消：需填写业务员编号或姓名后才能继续报价。",
+        time: formatNowTime(),
+      });
+      setComposerStatusLine("请先填写业务员身份", "warn");
+      return;
+    }
+    const { response, result } = post;
     if (isQuoteConfirmationResult(result)) {
       handleFinalQuoteConfirmationBlocked(pending, result, loadingToken);
+      return;
+    }
+    if (isQuoteValidationBlockedResult(result)) {
+      handleQuoteValidationBlocked(result, loadingToken);
       return;
     }
     if (!response.ok) {
@@ -6556,7 +7615,7 @@ async function confirmFinalQuoteFromStructureTable(btn) {
     replaceLoadingByToken(loadingToken, {
       role: "assistant",
       type: "text",
-      text: `确认报价后生成正式报价失败：${message}`,
+      text: `确认并生成正式报价失败：${message}`,
     });
     setComposerStatusLine(`生成报价失败：${message}`, "err");
   } finally {
@@ -6566,6 +7625,14 @@ async function confirmFinalQuoteFromStructureTable(btn) {
       scrollToBottom();
     }
   }
+}
+
+async function confirmStructureAndQuote(btn) {
+  return confirmAndGenerateQuote(btn);
+}
+
+async function confirmFinalQuoteFromStructureTable(btn) {
+  return confirmAndGenerateQuote(btn);
 }
 
 async function promoteMaterialToPrimary(msgId) {
@@ -6748,17 +7815,20 @@ async function persistQuoteSessionMessages(seriesUid) {
   }
 }
 
-async function fetchAuthStatus() {
+async function fetchAuthStatus(skipRestore = false) {
   try {
     const res = await quoteFetch("/api/auth/status");
     const data = await res.json().catch(() => ({}));
     if (res.ok && data && typeof data === "object") {
       state.authStatus = data;
       renderWecomEntryGate();
-      renderWecomAuthBanner();
+      renderSalesAuthBanner();
       syncWecomComposerHints();
       handleWecomAuthUrlErrors();
       maybeAutoWecomLogin();
+      if (!skipRestore) {
+        await restoreLocalSalesIdentityIfNeeded();
+      }
     } else if (!res.ok && data && typeof data === "object") {
       const text = String(data.message || data.error || `认证状态获取失败（HTTP ${res.status}）`);
       setComposerStatusLine(text, "err", { ttlMs: 10000 });
@@ -6830,6 +7900,55 @@ function renderWecomAuthBanner() {
   for (const banner of banners) {
     banner.innerHTML = html;
     banner.classList.add("wecom-auth-warn");
+    banner.classList.remove("wecom-auth-hidden");
+  }
+}
+
+function renderSalesAuthBanner() {
+  renderWecomAuthBanner();
+  const st = state.authStatus;
+  const chatBanner = document.getElementById("localSalesAuthBanner");
+  if (!st || st.wecom_enabled) {
+    if (chatBanner) {
+      chatBanner.innerHTML = "";
+      chatBanner.classList.add("wecom-auth-hidden");
+    }
+    document.getElementById("localSalesAuthBannerMyQuotes")?.remove();
+    return;
+  }
+  const mountMyQuotesBanner = (anchorEl, id) => {
+    if (!anchorEl || !anchorEl.parentNode) {
+      return null;
+    }
+    let banner = document.getElementById(id);
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = id;
+      banner.className = "local-sales-auth-banner";
+      anchorEl.parentNode.insertBefore(banner, anchorEl.nextSibling);
+    }
+    return banner;
+  };
+  const myQuotesBanner = mountMyQuotesBanner(
+    document.querySelector(".my-quotes-page-head"),
+    "localSalesAuthBannerMyQuotes",
+  );
+  const banners = [chatBanner, myQuotesBanner].filter(Boolean);
+  if (!banners.length) {
+    return;
+  }
+  if (st.authenticated) {
+    const who = String(st.sales_user_label || st.sales_user_name || st.sales_user_id || "").trim();
+    const html = `<span>当前业务员：${escapeHtml(who)}</span>`;
+    for (const banner of banners) {
+      banner.innerHTML = html;
+      banner.classList.remove("wecom-auth-hidden");
+    }
+    return;
+  }
+  for (const banner of banners) {
+    banner.innerHTML =
+      '<span>上传表格后将自动识别业务员；若未识别，请按提示填写编号或姓名。</span>';
     banner.classList.remove("wecom-auth-hidden");
   }
 }
@@ -7524,10 +8643,28 @@ function initialize() {
 
   els.chatMessages.addEventListener("input", (event) => {
     const inp = event.target;
-    if (!(inp instanceof HTMLInputElement || inp instanceof HTMLTextAreaElement)) {
+    if (!(inp instanceof HTMLInputElement || inp instanceof HTMLTextAreaElement || inp instanceof HTMLSelectElement)) {
       return;
     }
-    if (!inp.hasAttribute("data-structure-row-field")) {
+    if (!inp.hasAttribute("data-structure-row-field") && !inp.hasAttribute("data-section-field")) {
+      return;
+    }
+    const card = inp.closest(".structure-confirm-card[data-structure-card-token]");
+    if (!card) {
+      return;
+    }
+    const tok = String(card.getAttribute("data-structure-card-token") || "").trim();
+    if (tok) {
+      markStructurePreviewDirty(tok);
+    }
+  });
+
+  els.chatMessages.addEventListener("change", (event) => {
+    const inp = event.target;
+    if (!(inp instanceof HTMLInputElement || inp instanceof HTMLSelectElement)) {
+      return;
+    }
+    if (!inp.hasAttribute("data-structure-row-included") && !inp.hasAttribute("data-structure-row-field") && !inp.hasAttribute("data-section-field")) {
       return;
     }
     const card = inp.closest(".structure-confirm-card[data-structure-card-token]");
@@ -7664,10 +8801,10 @@ function initialize() {
       return;
     }
 
-    const finalQuoteBtn = event.target.closest("[data-quote-confirm-submit]");
-    if (finalQuoteBtn && !state.isRequesting) {
+    const preConfirmBtn = event.target.closest("[data-quote-pre-confirm-submit], [data-quote-confirm-submit]");
+    if (preConfirmBtn && !state.isRequesting) {
       event.preventDefault();
-      confirmFinalQuoteFromStructureTable(finalQuoteBtn).catch((err) => {
+      confirmAndGenerateQuote(preConfirmBtn).catch((err) => {
         const msg = humanizeNetworkError(err instanceof Error ? err : new Error(String(err)));
         addMessage("assistant", `报价确认失败：${msg}`);
       });
@@ -7675,11 +8812,11 @@ function initialize() {
     }
 
     const scBtn = event.target.closest(".btn-structure-confirm");
-    if (scBtn && !state.isRequesting && !scBtn.hasAttribute("data-quote-confirm-submit")) {
+    if (scBtn && !state.isRequesting && !scBtn.hasAttribute("data-quote-pre-confirm-submit") && !scBtn.hasAttribute("data-quote-confirm-submit")) {
       event.preventDefault();
-      confirmStructureAndQuote(scBtn).catch((err) => {
+      confirmAndGenerateQuote(scBtn).catch((err) => {
         const msg = humanizeNetworkError(err instanceof Error ? err : new Error(String(err)));
-        addMessage("assistant", `结构确认失败：${msg}`);
+        addMessage("assistant", `报价确认失败：${msg}`);
       });
       return;
     }
@@ -7813,6 +8950,7 @@ function initialize() {
   }
 
   bindQuoteApprovalRefreshTriggers();
+  bindSalesRepIdentityGateUi();
   startSalesSyncPolling();
   bindMyQuotesUi();
   bindAdminUpdatesUi();

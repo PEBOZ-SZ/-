@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>报价纠错学习 · 定制旅行背包报价中台</title>
+    <link rel="stylesheet" href="/static/admin/admin.css" />
+  </head>
+  <body>
+    <div class="admin-shell">
+      <header class="dash-bar">
+        <div class="dash-bar-intro">
+          <h1 class="dash-bar-title">报价纠错学习</h1>
+          <p class="dash-bar-desc muted">管理员修正 → 待审核候选 → 审批后规则才参与正式报价</p>
+        </div>
+        <nav class="admin-module-nav" aria-label="后台模块导航">
+          <a href="/admin/quotes" class="admin-module-link">
+            <span class="admin-module-kicker">Archive</span>
+            <strong>报价归档</strong>
+          </a>
+          <a href="/admin/prices" class="admin-module-link">
+            <span class="admin-module-kicker">Price KB</span>
+            <strong>价格库</strong>
+          </a>
+          <a href="/admin/correction-learning" class="admin-module-link admin-module-link-active">
+            <span class="admin-module-kicker">Learning</span>
+            <strong>纠错学习</strong>
+          </a>
+        </nav>
+      </header>
+
+      <main class="price-admin-shell correction-learning-shell">
+        <section class="pane" aria-label="待审核候选">
+          <div class="pane-head">
+            <h2 class="pane-title">待审核候选</h2>
+            <button type="button" id="btnRefreshCandidates" class="btn btn-secondary btn-sm">刷新</button>
+          </div>
+          <div class="filter-panel price-filter-panel">
+            <label class="field-compact">
+              <span class="field-label">状态</span>
+              <select id="filterCandidateStatus">
+                <option value="pending" selected>pending</option>
+                <option value="approved">approved</option>
+                <option value="rejected">rejected</option>
+                <option value="">全部</option>
+              </select>
+            </label>
+            <label class="field-compact">
+              <span class="field-label">错误类型</span>
+              <select id="filterErrorType">
+                <option value="">全部</option>
+                <option value="usage_overestimated">usage_overestimated</option>
+                <option value="usage_underestimated">usage_underestimated</option>
+                <option value="unit_price_wrong">unit_price_wrong</option>
+                <option value="unit_mismatch">unit_mismatch</option>
+                <option value="missing_material">missing_material</option>
+                <option value="extra_material">extra_material</option>
+                <option value="amount_mismatch">amount_mismatch</option>
+                <option value="margin_or_quote_formula_wrong">margin_or_quote_formula_wrong</option>
+              </select>
+            </label>
+          </div>
+          <div id="candidateDetail" class="correction-detail-panel" hidden></div>
+          <div class="table-scroll">
+            <table class="data-table data-table-compact" id="candidateTable">
+              <thead>
+                <tr>
+                  <th>产品/材料</th>
+                  <th>错误类型</th>
+                  <th>系统值</th>
+                  <th>修正值</th>
+                  <th>置信度</th>
+                  <th>状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="candidateBody"></tbody>
+            </table>
+          </div>
+          <p id="candidateEmpty" class="muted list-empty" hidden>暂无候选</p>
+        </section>
+
+        <section class="pane" aria-label="纠错规则">
+          <div class="pane-head">
+            <h2 class="pane-title">纠错规则</h2>
+            <button type="button" id="btnRefreshRules" class="btn btn-secondary btn-sm">刷新</button>
+          </div>
+          <div class="table-scroll">
+            <table class="data-table data-table-compact" id="ruleTable">
+              <thead>
+                <tr>
+                  <th>规则ID</th>
+                  <th>类型</th>
+                  <th>字段</th>
+                  <th>修正值</th>
+                  <th>状态</th>
+                  <th>启用</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="ruleBody"></tbody>
+            </table>
+          </div>
+          <p id="ruleEmpty" class="muted list-empty" hidden>暂无规则</p>
+        </section>
+      </main>
+    </div>
+    <script src="/static/admin/correction-learning.js"></script>
+  </body>
+</html>
