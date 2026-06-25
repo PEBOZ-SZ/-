@@ -4,6 +4,7 @@ import json
 
 from mcp_server.tools.quote_calculate import quote_calculate
 from mcp_server.tools.price_lookup import price_lookup
+from mcp_server.tools.quote_qa import quote_qa
 
 
 def _sample_input(role: str = "sales", include_items: bool = True) -> dict:
@@ -50,20 +51,36 @@ def _price_lookup_sample(role: str = "sales", query: dict | None = None) -> dict
     }
 
 
+def _quote_qa_sample(role: str = "sales", query: dict | None = None) -> dict:
+    return {
+        "user_context": {
+            "user_id": "sales_001",
+            "user_name": "张三",
+            "role": role,
+            "session_id": "sess_001",
+        },
+        "query": query if query is not None else {"user_text": "客户嫌这个包贵，怎么解释？"},
+    }
+
+
 def _run_case(
     label: str,
     tool_func,
     sample: dict,
     expected_ok: bool,
     error_contains: str | None = None,
+    require_answer: bool = False,
 ) -> bool:
     result = tool_func(sample)
     ok_matches = result.get("ok") is expected_ok
     error_matches = True
     if error_contains:
         error_matches = error_contains in str(result.get("error", ""))
+    answer_matches = True
+    if require_answer:
+        answer_matches = bool((result.get("result") or {}).get("answer"))
 
-    passed = ok_matches and error_matches
+    passed = ok_matches and error_matches and answer_matches
     status = "PASS" if passed else "FAIL"
     print(f"[MCP self-check] {label}: {status} ok={str(result.get('ok')).lower()}")
     if not passed:
@@ -112,6 +129,34 @@ def main() -> None:
             _price_lookup_sample(role="sales", query={}),
             False,
             "name",
+        ),
+        _run_case(
+            "sales quote_qa",
+            quote_qa,
+            _quote_qa_sample(role="sales"),
+            True,
+            require_answer=True,
+        ),
+        _run_case(
+            "guest quote_qa forbidden",
+            quote_qa,
+            _quote_qa_sample(role="guest", query={"user_text": "600D牛津布是什么？"}),
+            False,
+            "无权调用 quote_qa",
+        ),
+        _run_case(
+            "quote_qa missing user_text",
+            quote_qa,
+            _quote_qa_sample(role="sales", query={}),
+            False,
+            "user_text",
+        ),
+        _run_case(
+            "quote_qa blocked write/quote intent",
+            quote_qa,
+            _quote_qa_sample(role="sales", query={"user_text": "帮我重新报价并保存"}),
+            False,
+            "只读",
         ),
     ]
     if all(checks):

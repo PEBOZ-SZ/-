@@ -69,3 +69,30 @@ def validate_price_lookup_input(input_data: dict) -> tuple[dict[str, Any], dict[
         "limit": limit,
         "min_score": min_score,
     }
+
+
+def validate_quote_qa_input(input_data: dict) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not isinstance(input_data, dict):
+        raise ValueError("输入必须是 dict。")
+
+    user_context = normalize_user_context(input_data.get("user_context"))
+    query = input_data.get("query")
+    if not isinstance(query, dict):
+        raise ValueError("query 必须是 dict。")
+
+    user_text = str(query.get("user_text") or "").strip()
+    if not user_text:
+        raise ValueError("query.user_text 必须是非空字符串。")
+    if len(user_text) > 2000:
+        raise ValueError("query.user_text 长度不能超过 2000 字。")
+
+    sid = query.get("sid")
+    if sid is None or str(sid).strip() == "":
+        sid = user_context.get("session_id")
+    if sid is not None:
+        sid = str(sid).strip() or None
+
+    return user_context, {
+        "user_text": user_text,
+        "sid": sid,
+    }

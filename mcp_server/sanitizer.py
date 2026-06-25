@@ -68,3 +68,22 @@ def sanitize_price_lookup_result(result: dict, role: str = "sales") -> dict:
         "hits": safe_hits,
         "hit_count": len(safe_hits),
     }
+
+
+def sanitize_quote_qa_result(result: dict, role: str = "sales") -> dict:
+    """Return a whitelist-filtered readonly QA result."""
+    if not isinstance(result, dict):
+        result = {}
+
+    answer = str(result.get("assistant_message") or result.get("answer") or "").strip()
+    if not answer:
+        answer = "暂时没有找到可靠答复。"
+
+    sources = result.get("sources")
+    qa_sources = result.get("qa_sources")
+    return {
+        "answer": answer,
+        "source_type": str(result.get("source_type") or "fallback"),
+        "sources": sources if isinstance(sources, list) else [],
+        "qa_sources": qa_sources if isinstance(qa_sources, list) else [],
+    }
