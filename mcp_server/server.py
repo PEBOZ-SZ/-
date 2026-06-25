@@ -6,6 +6,7 @@ from mcp_server.tools.quote_calculate import quote_calculate
 from mcp_server.tools.price_lookup import price_lookup
 from mcp_server.tools.quote_qa import quote_qa
 from mcp_server.tools.quote_explain import quote_explain
+from mcp_server.tools.quote_patch_preview import quote_patch_preview
 
 
 def _sample_input(role: str = "sales", include_items: bool = True) -> dict:
@@ -105,6 +106,23 @@ def _quote_explain_sample(role: str = "sales", query: dict | None = None) -> dic
             "user_question": "为什么 300 件比 1000 件贵？",
             "quote_result": _quote_explain_quote_result(),
             "audience": "sales_internal",
+        },
+    }
+
+
+def _quote_patch_preview_sample(role: str = "sales", query: dict | None = None) -> dict:
+    return {
+        "user_context": {
+            "user_id": "sales_001",
+            "user_name": "张三",
+            "role": role,
+            "session_id": "sess_001",
+        },
+        "query": query
+        if query is not None
+        else {
+            "quote_result": _quote_explain_quote_result(),
+            "patch": {"quantity": 1000},
         },
     }
 
@@ -237,6 +255,12 @@ def main() -> None:
             ),
             False,
             "只解释",
+        ),
+        _run_case(
+            "quote_patch_preview",
+            quote_patch_preview,
+            _quote_patch_preview_sample(role="sales"),
+            True,
         ),
     ]
     if all(checks):

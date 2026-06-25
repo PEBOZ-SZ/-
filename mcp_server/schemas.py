@@ -129,3 +129,28 @@ def validate_quote_explain_input(input_data: dict) -> tuple[dict[str, Any], dict
         "quote_result": quote_result,
         "audience": audience,
     }
+
+
+def validate_quote_patch_preview_input(input_data: dict) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not isinstance(input_data, dict):
+        raise ValueError("输入必须是 dict。")
+
+    user_context = normalize_user_context(input_data.get("user_context"))
+    query = input_data.get("query")
+    if not isinstance(query, dict):
+        raise ValueError("query 必须是 dict。")
+
+    quote_result = query.get("quote_result")
+    if not isinstance(quote_result, dict) or not quote_result:
+        raise ValueError("query.quote_result 必须是非空 dict。")
+
+    patch = query.get("patch", {})
+    if patch is None:
+        patch = {}
+    if not isinstance(patch, dict):
+        raise ValueError("query.patch 必须是 dict。")
+
+    return user_context, {
+        "quote_result": quote_result,
+        "patch": dict(patch),
+    }

@@ -103,3 +103,24 @@ def sanitize_quote_explain_result(result: dict, role: str = "sales") -> dict:
         "number_policy": "quote_result_only",
         "fallback_used": bool(result.get("fallback_used")),
     }
+
+
+def sanitize_quote_patch_preview_result(result: dict, role: str = "sales") -> dict:
+    """Return readonly patch preview result fields only."""
+    if not isinstance(result, dict):
+        result = {}
+    diff = result.get("diff") if isinstance(result.get("diff"), dict) else {}
+    return {
+        "original_quote": result.get("original_quote") if isinstance(result.get("original_quote"), dict) else {},
+        "patched_quote": result.get("patched_quote") if isinstance(result.get("patched_quote"), dict) else {},
+        "diff": {
+            "changed_fields": diff.get("changed_fields") if isinstance(diff.get("changed_fields"), list) else [],
+            "before_total": diff.get("before_total", 0),
+            "after_total": diff.get("after_total", 0),
+            "delta": diff.get("delta", 0),
+            "delta_percent": diff.get("delta_percent", 0),
+            "unsupported_fields": diff.get("unsupported_fields")
+            if isinstance(diff.get("unsupported_fields"), list)
+            else [],
+        },
+    }
