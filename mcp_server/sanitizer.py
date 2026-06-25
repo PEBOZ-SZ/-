@@ -124,3 +124,45 @@ def sanitize_quote_patch_preview_result(result: dict, role: str = "sales") -> di
             else [],
         },
     }
+
+
+def sanitize_quote_save_result(result: dict, role: str = "sales") -> dict:
+    """Return quote_save public fields only."""
+    if not isinstance(result, dict):
+        result = {}
+    return {
+        "quote_id": str(result.get("quote_id") or ""),
+        "status": str(result.get("status") or ""),
+        "locked": bool(result.get("locked")),
+        "created_at": str(result.get("created_at") or ""),
+    }
+
+
+def sanitize_quote_export_result(result: dict, role: str = "sales") -> dict:
+    """Return quote_export public fields only."""
+    if not isinstance(result, dict):
+        result = {}
+    return {
+        "quote_id": str(result.get("quote_id") or ""),
+        "file_type": str(result.get("file_type") or ""),
+        "file_path": str(result.get("file_path") or ""),
+        "file_name": str(result.get("file_name") or ""),
+        "created_at": str(result.get("created_at") or ""),
+    }
+
+
+def sanitize_quote_admin_result(result: dict, role: str = "sales") -> dict:
+    """Return quote_admin public fields only."""
+    if not isinstance(result, dict):
+        result = {}
+    out = {
+        "action": str(result.get("action") or ""),
+        "quote_id": str(result.get("quote_id") or ""),
+        "status": str(result.get("status") or ""),
+        "updated_at": str(result.get("updated_at") or ""),
+    }
+    if "frozen" in result:
+        out["frozen"] = bool(result.get("frozen"))
+    if result.get("quote_summary") and isinstance(result.get("quote_summary"), dict):
+        out["quote_summary"] = result["quote_summary"]
+    return out

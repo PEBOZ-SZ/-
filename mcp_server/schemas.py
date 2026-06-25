@@ -154,3 +154,72 @@ def validate_quote_patch_preview_input(input_data: dict) -> tuple[dict[str, Any]
         "quote_result": quote_result,
         "patch": dict(patch),
     }
+
+
+def validate_quote_save_input(input_data: dict) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not isinstance(input_data, dict):
+        raise ValueError("输入必须是 dict。")
+
+    user_context = normalize_user_context(input_data.get("user_context"))
+    query = input_data.get("query")
+    if not isinstance(query, dict):
+        raise ValueError("query 必须是 dict。")
+
+    quote_result = query.get("quote_result")
+    if not isinstance(quote_result, dict) or not quote_result:
+        raise ValueError("query.quote_result 必须是非空 dict。")
+
+    return user_context, {"quote_result": quote_result}
+
+
+def validate_quote_export_input(input_data: dict) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not isinstance(input_data, dict):
+        raise ValueError("输入必须是 dict。")
+
+    user_context = normalize_user_context(input_data.get("user_context"))
+    query = input_data.get("query")
+    if not isinstance(query, dict):
+        raise ValueError("query 必须是 dict。")
+
+    quote_id = str(query.get("quote_id") or "").strip()
+    if not quote_id:
+        raise ValueError("query.quote_id 必须是非空字符串。")
+
+    return user_context, {"quote_id": quote_id}
+
+
+QUOTE_ADMIN_ACTIONS = {
+    "approve_quote",
+    "reject_quote",
+    "freeze_quote",
+    "unfreeze_quote",
+    "mark_exported",
+    "update_price_rule",
+    "view_quote",
+}
+
+
+def validate_quote_admin_input(input_data: dict) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not isinstance(input_data, dict):
+        raise ValueError("输入必须是 dict。")
+
+    user_context = normalize_user_context(input_data.get("user_context"))
+    query = input_data.get("query")
+    if not isinstance(query, dict):
+        raise ValueError("query 必须是 dict。")
+
+    action = str(query.get("action") or "").strip()
+    if action not in QUOTE_ADMIN_ACTIONS:
+        raise ValueError("query.action 不支持。")
+
+    quote_id = str(query.get("quote_id") or "").strip()
+    if action != "update_price_rule" and not quote_id:
+        raise ValueError("query.quote_id 必须是非空字符串。")
+
+    payload = query.get("payload", {})
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise ValueError("query.payload 必须是 dict。")
+
+    return user_context, {"action": action, "quote_id": quote_id, "payload": payload}

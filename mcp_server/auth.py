@@ -12,6 +12,9 @@ def require_tool_permission(user_context: dict, tool_name: str) -> None:
         "quote_qa",
         "quote_explain",
         "quote_patch_preview",
+        "quote_save",
+        "quote_export",
+        "quote_admin",
     } and role in {"sales", "admin"}:
         return
 

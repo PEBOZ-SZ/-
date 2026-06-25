@@ -7,6 +7,9 @@ from mcp_server.tools.price_lookup import price_lookup
 from mcp_server.tools.quote_qa import quote_qa
 from mcp_server.tools.quote_explain import quote_explain
 from mcp_server.tools.quote_patch_preview import quote_patch_preview
+from mcp_server.tools.quote_save import quote_save
+from mcp_server.tools.quote_export import quote_export
+from mcp_server.tools.quote_admin import quote_admin
 
 
 def _sample_input(role: str = "sales", include_items: bool = True) -> dict:
@@ -127,6 +130,26 @@ def _quote_patch_preview_sample(role: str = "sales", query: dict | None = None) 
     }
 
 
+def _quote_save_sample(role: str = "sales", query: dict | None = None) -> dict:
+    return {
+        "user_context": {
+            "user_id": "sales_001",
+            "user_name": "张三",
+            "role": role,
+            "session_id": "sess_001",
+        },
+        "query": query
+        if query is not None
+        else {
+            "quote_result": {
+                "product_name": "测试背包",
+                "tiers": [{"quantity": 300, "exw_price": 88.9}],
+                "total_price": 88.9,
+            },
+        },
+    }
+
+
 def _run_case(
     label: str,
     tool_func,
@@ -149,6 +172,77 @@ def _run_case(
     print(f"[MCP self-check] {label}: {status} ok={str(result.get('ok')).lower()}")
     if not passed:
         print(json.dumps(result, ensure_ascii=False, indent=2))
+    return passed
+
+
+def _run_quote_export_case() -> bool:
+    save_result = quote_save(_quote_save_sample(role="sales"))
+    quote_id = ((save_result.get("result") or {}).get("quote_id") if save_result.get("ok") else "")
+    sample = {
+        "user_context": {
+            "user_id": "sales_001",
+            "user_name": "张三",
+            "role": "sales",
+            "session_id": "sess_001",
+        },
+        "query": {"quote_id": quote_id},
+    }
+    return _run_case("quote_export", quote_export, sample, True)
+
+
+def _run_quote_admin_case_legacy() -> bool:
+    save_result = quote_save(_quote_save_sample(role="sales"))
+    quote_id = ((save_result.get("result") or {}).get("quote_id") if save_result.get("ok") else "")
+    sample = {
+        "user_context": {
+            "user_id": "admin_001",
+            "user_name": "管理员",
+            "role": "admin",
+            "session_id": "sess_001",
+        },
+        "query": {
+            "action": "approve_quote",
+            "quote_id": quote_id,
+            "payload": {"reason": "self-check"},
+        },
+    }
+    return _run_case("quote_admin", quote_admin, sample, True)
+
+
+def _run_quote_admin_case() -> bool:
+    save_result = quote_save(_quote_save_sample(role="sales"))
+    quote_id = ((save_result.get("result") or {}).get("quote_id") if save_result.get("ok") else "")
+    user_context = {
+        "user_id": "admin_001",
+        "user_name": "admin",
+        "role": "admin",
+        "session_id": "sess_001",
+    }
+    approve_result = quote_admin(
+        {
+            "user_context": user_context,
+            "query": {
+                "action": "approve_quote",
+                "quote_id": quote_id,
+                "payload": {"reason": "self-check"},
+            },
+        }
+    )
+    export_result = quote_admin(
+        {
+            "user_context": user_context,
+            "query": {
+                "action": "mark_exported",
+                "quote_id": quote_id,
+                "payload": {"reason": "self-check"},
+            },
+        }
+    )
+    passed = approve_result.get("ok") is True and export_result.get("ok") is True
+    status = "PASS" if passed else "FAIL"
+    print(f"[MCP self-check] quote_admin: {status} ok={str(passed).lower()}")
+    if not passed:
+        print(json.dumps({"approve": approve_result, "mark_exported": export_result}, ensure_ascii=False, indent=2))
     return passed
 
 
@@ -262,6 +356,14 @@ def main() -> None:
             _quote_patch_preview_sample(role="sales"),
             True,
         ),
+        _run_case(
+            "quote_save",
+            quote_save,
+            _quote_save_sample(role="sales"),
+            True,
+        ),
+        _run_quote_export_case(),
+        _run_quote_admin_case(),
     ]
     if all(checks):
         print("[MCP self-check] all checks passed")
