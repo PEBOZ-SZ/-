@@ -1232,3 +1232,168 @@ def compact_quote_bridge(quote: dict[str, Any], *, file_hint: str) -> str:
                 }
             )
     return json.dumps(snippet, ensure_ascii=False)
+
+
+QUOTE_EXPLAIN_RESULT_FIELDS = {
+    "product_name",
+    "material_total",
+    "material_total_text",
+    "tiers",
+    "items",
+    "warnings",
+    "review_required",
+    "pricing_review_required",
+    "structure_checklist",
+    "error",
+}
+
+QUOTE_EXPLAIN_TIER_FIELDS = {
+    "quantity",
+    "exw_price",
+    "fob_price",
+    "cost_before_margin",
+    "unit_cost",
+    "mold_fee_per_unit",
+    "material_cost",
+    "processing_fee",
+    "system_overhead",
+    "gross_margin_rate",
+    "margin_rate",
+    "fob_addition_per_piece",
+}
+
+QUOTE_EXPLAIN_ITEM_FIELDS = {
+    "name",
+    "spec",
+    "usage",
+    "unit_price",
+    "amount",
+    "source",
+    "price_source",
+    "pricing_review_required",
+    "price_conflict_required",
+    "kb_hit",
+    "spec_ai",
+    "usage_ai",
+    "unit_price_ai",
+    "amount_ai",
+    "recognition_status",
+    "calc_note",
+}
+
+QUOTE_EXPLAIN_SYSTEM_PROMPT = (
+    "你是定制软包报价解释助手。\n"
+    "你只能解释输入 quote_result_facts 中已经存在的报价数字和字段。\n"
+    "不能新增、估算、推导或重新计算任何报价数字。\n"
+    "不能修改报价，不能承诺价格，不能保存、导出、审批或修改价格库。\n"
+    "如果用户要求重新报价、改价、保存、导出、审批或修改价格库，必须说明需要调用对应工具。\n"
+    "回答要根据 audience 调整语气：sales_internal 给销售内部看，直接说明成本结构和风险点；"
+    "customer_friendly 给客户看，避免暴露过多内部毛利细节，表达温和；"
+    "factory_review 给工厂/核价人员看，突出复核点和异常项。\n"
+    "如果 quote_result_facts 中没有足够依据，请明确说“当前报价结果中没有足够信息解释该点”，不要编造。"
+)
+
+
+def _copy_allowed_fields(source: dict[str, Any], allowed: set[str]) -> dict[str, Any]:
+    return {key: value for key, value in source.items() if key in allowed}
+
+
+def build_quote_explain_facts(quote_result: dict) -> dict:
+    """Extract safe facts from quote_result; never recalculates quote values."""
+    if not isinstance(quote_result, dict):
+        return {}
+    facts = _copy_allowed_fields(quote_result, QUOTE_EXPLAIN_RESULT_FIELDS)
+
+    tiers = quote_result.get("tiers")
+    if isinstance(tiers, list):
+        facts["tiers"] = [
+            _copy_allowed_fields(tier, QUOTE_EXPLAIN_TIER_FIELDS)
+            for tier in tiers
+            if isinstance(tier, dict)
+        ]
+
+    items = quote_result.get("items")
+    if isinstance(items, list):
+        facts["items"] = [
+            _copy_allowed_fields(item, QUOTE_EXPLAIN_ITEM_FIELDS)
+            for item in items
+            if isinstance(item, dict)
+        ]
+
+    return facts
+
+
+def build_quote_explain_fallback_text(
+    quote_result: dict,
+    *,
+    user_question: str = "",
+    quote_result_facts: dict | None = None,
+) -> str:
+    """Local fallback explanation; numbers only come from quote_result facts."""
+    facts = quote_result_facts if isinstance(quote_result_facts, dict) else build_quote_explain_facts(quote_result)
+    product_name = str(facts.get("product_name") or "当前报价").strip()
+    lines = [
+        f"这份「{product_name}」解释仅基于已传入的报价结果，不重新计算报价。",
+        "报价通常由材料成本、加工费、系统开销、开模费摊销、毛利率和数量阶梯共同形成。",
+    ]
+
+    tiers = facts.get("tiers")
+    if isinstance(tiers, list) and tiers:
+        tier_lines = []
+        for tier in tiers[:5]:
+            if not isinstance(tier, dict):
+                continue
+            parts = []
+            if "quantity" in tier:
+                parts.append(f"{tier.get('quantity')}件")
+            if "cost_before_margin" in tier:
+                parts.append(f"成本{tier.get('cost_before_margin')}")
+            if "exw_price" in tier:
+                parts.append(f"EXW{tier.get('exw_price')}")
+            if "fob_price" in tier:
+                parts.append(f"FOB{tier.get('fob_price')}")
+            if parts:
+                tier_lines.append(" / ".join(parts))
+        if tier_lines:
+            lines.append("当前报价结果中的数量档：" + "；".join(tier_lines) + "。")
+    else:
+        lines.append("当前报价结果中没有数量阶梯，无法展开不同数量之间的价差。")
+
+    if facts.get("warnings"):
+        lines.append("报价结果中带有风险或提示项，建议人工复核后再对外确认。")
+    if facts.get("review_required") or facts.get("pricing_review_required"):
+        lines.append("该报价结果标记为需要复核，解释时应提醒销售或核价人员先确认异常项。")
+
+    lines.append("本解释不修改报价、不保存、不导出、不审批，也不写入价格库。")
+    return "\n".join(lines)
+
+
+def generate_quote_explain_with_llm(
+    *,
+    user_question: str,
+    quote_result_facts: dict,
+    audience: str = "sales_internal",
+) -> str:
+    """Generate a natural-language explanation via existing OpenAI-compatible client."""
+    from quotation_agent.moonshot_client import chat_completions
+
+    user_prompt = {
+        "audience": audience,
+        "user_question": user_question,
+        "quote_result_facts": quote_result_facts,
+    }
+    return str(
+        chat_completions(
+            messages=[
+                {"role": "system", "content": QUOTE_EXPLAIN_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(user_prompt, ensure_ascii=False, indent=2),
+                },
+            ],
+            temperature=0.3,
+            max_tokens=1200,
+            timeout_sec=60,
+        )
+        or ""
+    ).strip()

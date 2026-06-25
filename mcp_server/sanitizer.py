@@ -87,3 +87,19 @@ def sanitize_quote_qa_result(result: dict, role: str = "sales") -> dict:
         "sources": sources if isinstance(sources, list) else [],
         "qa_sources": qa_sources if isinstance(qa_sources, list) else [],
     }
+
+
+def sanitize_quote_explain_result(result: dict, role: str = "sales") -> dict:
+    """Return a whitelist-filtered readonly quote explanation result."""
+    if not isinstance(result, dict):
+        result = {}
+    answer = str(result.get("answer") or "").strip()
+    if not answer:
+        answer = "当前报价结果中没有足够信息解释该点。"
+    return {
+        "answer": answer,
+        "audience": str(result.get("audience") or "sales_internal"),
+        "used_quote_result": bool(result.get("used_quote_result", True)),
+        "number_policy": "quote_result_only",
+        "fallback_used": bool(result.get("fallback_used")),
+    }

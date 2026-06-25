@@ -96,3 +96,36 @@ def validate_quote_qa_input(input_data: dict) -> tuple[dict[str, Any], dict[str,
         "user_text": user_text,
         "sid": sid,
     }
+
+
+QUOTE_EXPLAIN_AUDIENCES = {"sales_internal", "customer_friendly", "factory_review"}
+
+
+def validate_quote_explain_input(input_data: dict) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not isinstance(input_data, dict):
+        raise ValueError("输入必须是 dict。")
+
+    user_context = normalize_user_context(input_data.get("user_context"))
+    query = input_data.get("query")
+    if not isinstance(query, dict):
+        raise ValueError("query 必须是 dict。")
+
+    user_question = str(query.get("user_question") or "").strip()
+    if not user_question:
+        raise ValueError("query.user_question 必须是非空字符串。")
+    if len(user_question) > 1000:
+        raise ValueError("query.user_question 长度不能超过 1000 字。")
+
+    quote_result = query.get("quote_result")
+    if not isinstance(quote_result, dict) or not quote_result:
+        raise ValueError("query.quote_result 必须是非空 dict。")
+
+    audience = str(query.get("audience") or "sales_internal").strip() or "sales_internal"
+    if audience not in QUOTE_EXPLAIN_AUDIENCES:
+        raise ValueError("query.audience 只允许 sales_internal/customer_friendly/factory_review。")
+
+    return user_context, {
+        "user_question": user_question,
+        "quote_result": quote_result,
+        "audience": audience,
+    }
