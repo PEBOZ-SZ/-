@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from mcp_server.tools.quote_calculate import quote_calculate
+from mcp_server.tools.price_lookup import price_lookup
 
 
 def _sample_input(role: str = "sales", include_items: bool = True) -> dict:
@@ -37,8 +38,26 @@ def _sample_input(role: str = "sales", include_items: bool = True) -> dict:
     }
 
 
-def _run_case(label: str, sample: dict, expected_ok: bool, error_contains: str | None = None) -> bool:
-    result = quote_calculate(sample)
+def _price_lookup_sample(role: str = "sales", query: dict | None = None) -> dict:
+    return {
+        "user_context": {
+            "user_id": "sales_001",
+            "user_name": "张三",
+            "role": role,
+            "session_id": "sess_001",
+        },
+        "query": query if query is not None else {"name": "拉链", "spec": "", "limit": 5},
+    }
+
+
+def _run_case(
+    label: str,
+    tool_func,
+    sample: dict,
+    expected_ok: bool,
+    error_contains: str | None = None,
+) -> bool:
+    result = tool_func(sample)
     ok_matches = result.get("ok") is expected_ok
     error_matches = True
     if error_contains:
@@ -58,10 +77,42 @@ def main() -> None:
     print("python -m mcp_server.server")
 
     checks = [
-        _run_case("sales quote_calculate", _sample_input(role="sales"), True),
-        _run_case("admin quote_calculate", _sample_input(role="admin"), True),
-        _run_case("guest forbidden", _sample_input(role="guest"), False, "无权调用 quote_calculate"),
-        _run_case("missing items", _sample_input(role="sales", include_items=False), False, "缺少明细 items"),
+        _run_case("sales quote_calculate", quote_calculate, _sample_input(role="sales"), True),
+        _run_case("admin quote_calculate", quote_calculate, _sample_input(role="admin"), True),
+        _run_case(
+            "guest forbidden",
+            quote_calculate,
+            _sample_input(role="guest"),
+            False,
+            "无权调用 quote_calculate",
+        ),
+        _run_case(
+            "missing items",
+            quote_calculate,
+            _sample_input(role="sales", include_items=False),
+            False,
+            "缺少明细 items",
+        ),
+        _run_case(
+            "sales price_lookup",
+            price_lookup,
+            _price_lookup_sample(role="sales"),
+            True,
+        ),
+        _run_case(
+            "guest price_lookup forbidden",
+            price_lookup,
+            _price_lookup_sample(role="guest"),
+            False,
+            "无权调用 price_lookup",
+        ),
+        _run_case(
+            "price_lookup missing name",
+            price_lookup,
+            _price_lookup_sample(role="sales", query={}),
+            False,
+            "name",
+        ),
     ]
     if all(checks):
         print("[MCP self-check] all checks passed")
