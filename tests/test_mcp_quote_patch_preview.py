@@ -55,7 +55,7 @@ class McpQuotePatchPreviewTests(unittest.TestCase):
         }
 
     def test_quantity_patch_selects_matching_tier(self):
-        from mcp_server.tools.quote_patch_preview import quote_patch_preview
+        from mcp_server.tools.quote_patch_preview import apply_patch, quote_patch_preview
 
         result = quote_patch_preview(self._input(patch_data={"quantity": 1000}))
 
@@ -64,6 +64,8 @@ class McpQuotePatchPreviewTests(unittest.TestCase):
         self.assertEqual(result["mode"], "readonly")
         self.assertEqual(result["result"]["patched_quote"]["selected_tier"]["quantity"], 1000)
         self.assertIn("quantity", result["result"]["diff"]["changed_fields"])
+        direct = apply_patch(self._quote_result(), {"quantity": 1000})
+        self.assertEqual(direct["selected_tier"]["quantity"], 1000)
 
     def test_processing_fee_patch_updates_existing_tier_values(self):
         from mcp_server.tools.quote_patch_preview import quote_patch_preview
@@ -109,7 +111,7 @@ class McpQuotePatchPreviewTests(unittest.TestCase):
         bridge.assert_not_called()
 
     def test_diff_contains_totals_and_delta(self):
-        from mcp_server.tools.quote_patch_preview import quote_patch_preview
+        from mcp_server.tools.quote_patch_preview import generate_diff, quote_patch_preview
 
         result = quote_patch_preview(self._input(patch_data={"processing_fee": 13}))
 
@@ -118,6 +120,20 @@ class McpQuotePatchPreviewTests(unittest.TestCase):
         self.assertEqual(diff["after_total"], 85.9)
         self.assertEqual(diff["delta"], 1.0)
         self.assertAlmostEqual(diff["delta_percent"], 1.18)
+        direct = generate_diff(self._quote_result(), result["result"]["patched_quote"])
+        self.assertEqual(direct["before_total"], 84.9)
+        self.assertEqual(direct["after_total"], 85.9)
+
+    def test_material_replace_marks_preview_material(self):
+        from mcp_server.tools.quote_patch_preview import quote_patch_preview
+
+        result = quote_patch_preview(self._input(patch_data={"material_replace": "600D"}))
+
+        self.assertTrue(result["ok"])
+        patched = result["result"]["patched_quote"]
+        self.assertEqual(patched["preview_material_replace"], "600D")
+        self.assertEqual(patched["items"][0]["preview_material_replace"], "600D")
+        self.assertIn("material_replace", result["result"]["diff"]["changed_fields"])
 
     def test_call_writes_audit_log_without_quote_result(self):
         from mcp_server.tools.quote_patch_preview import quote_patch_preview

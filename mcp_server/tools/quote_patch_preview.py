@@ -119,50 +119,59 @@ def _apply_material_replace(patched: dict[str, Any], material_replace: Any, chan
     changed_fields.append("material_replace")
 
 
-def _build_diff(
+def generate_diff(
     original: dict[str, Any],
-    patched: dict[str, Any],
-    changed_fields: list[str],
-    unsupported_fields: list[str],
+    modified: dict[str, Any],
 ) -> dict[str, Any]:
     before_total = _primary_total(original)
-    after_total = _primary_total(patched)
+    after_total = _primary_total(modified)
     delta = _round_money(after_total - before_total)
     delta_percent = round((delta / before_total * 100), 2) if before_total else 0
     return {
-        "changed_fields": changed_fields,
+        "changed_fields": list(modified.get("_preview_changed_fields") or []),
         "before_total": before_total,
         "after_total": after_total,
         "delta": delta,
         "delta_percent": delta_percent,
-        "unsupported_fields": unsupported_fields,
+        "unsupported_fields": list(modified.get("_preview_unsupported_fields") or []),
     }
+
+
+def apply_patch(quote_result: dict, patch: dict) -> dict:
+    """Apply a local preview patch to a copied quote_result; never calls pricing engines."""
+    patched = copy.deepcopy(quote_result)
+    changed_fields: list[str] = []
+    patch_dict = patch if isinstance(patch, dict) else {}
+    unsupported_fields = [key for key in patch_dict if key not in SUPPORTED_PATCH_FIELDS]
+
+    if "quantity" in patch_dict:
+        _apply_quantity_patch(patched, patch_dict.get("quantity"), changed_fields)
+    if "processing_fee" in patch_dict or "processing_fee_delta" in patch_dict:
+        _apply_processing_fee_patch(patched, patch_dict, changed_fields)
+    if "material_replace" in patch_dict:
+        _apply_material_replace(patched, patch_dict.get("material_replace"), changed_fields)
+
+    patched["_preview_changed_fields"] = changed_fields
+    patched["_preview_unsupported_fields"] = unsupported_fields
+    return patched
+
+
+def _strip_preview_meta(quote: dict[str, Any]) -> dict[str, Any]:
+    cleaned = copy.deepcopy(quote)
+    cleaned.pop("_preview_changed_fields", None)
+    cleaned.pop("_preview_unsupported_fields", None)
+    return cleaned
 
 
 def _preview_quote_patch(quote_result: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     original = copy.deepcopy(quote_result)
-    patched = copy.deepcopy(quote_result)
-    changed_fields: list[str] = []
-    unsupported_fields = [key for key in patch if key not in SUPPORTED_PATCH_FIELDS]
-
-    if not patch:
-        return {
-            "original_quote": original,
-            "patched_quote": patched,
-            "diff": _build_diff(original, patched, [], []),
-        }
-
-    if "quantity" in patch:
-        _apply_quantity_patch(patched, patch.get("quantity"), changed_fields)
-    if "processing_fee" in patch or "processing_fee_delta" in patch:
-        _apply_processing_fee_patch(patched, patch, changed_fields)
-    if "material_replace" in patch:
-        _apply_material_replace(patched, patch.get("material_replace"), changed_fields)
-
+    patched_with_meta = apply_patch(quote_result, patch)
+    diff = generate_diff(original, patched_with_meta)
+    patched = _strip_preview_meta(patched_with_meta)
     return {
         "original_quote": original,
         "patched_quote": patched,
-        "diff": _build_diff(original, patched, changed_fields, unsupported_fields),
+        "diff": diff,
     }
 
 
