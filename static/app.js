@@ -777,6 +777,7 @@ const state = {
     primaryQuoteMsgId: "",
   },
   pendingStructureConfirm: null,
+  workflowState: "INPUT",
   threadId: "",
   composerAttachments: [],
   isRequesting: false,
@@ -809,6 +810,38 @@ const state = {
     },
   ],
 };
+
+const WORKFLOW_STEP_ORDER = [
+  "INPUT",
+  "STRUCTURE_PARSE",
+  "STRUCTURE_CONFIRM",
+  "QUOTE_CALCULATE",
+  "QUOTE_SAVE",
+  "QUOTE_EXPORT",
+];
+
+const WORKFLOW_STATE_TO_STEP = {
+  INPUT: "INPUT",
+  PARSED: "STRUCTURE_PARSE",
+  STRUCTURE_CONFIRM: "STRUCTURE_CONFIRM",
+  CONFIRMED: "QUOTE_CALCULATE",
+  CALCULATED: "QUOTE_SAVE",
+  SAVED: "QUOTE_EXPORT",
+  EXPORTED: "QUOTE_EXPORT",
+};
+
+function setWorkflowState(nextState) {
+  const normalized = String(nextState || "INPUT").trim() || "INPUT";
+  state.workflowState = normalized;
+  const activeStep = WORKFLOW_STATE_TO_STEP[normalized] || "INPUT";
+  const activeIndex = WORKFLOW_STEP_ORDER.indexOf(activeStep);
+  document.querySelectorAll("[data-workflow-step]").forEach((node) => {
+    const step = node.getAttribute("data-workflow-step") || "";
+    const index = WORKFLOW_STEP_ORDER.indexOf(step);
+    node.classList.toggle("is-active", step === activeStep);
+    node.classList.toggle("is-done", index >= 0 && activeIndex >= 0 && index < activeIndex);
+  });
+}
 
 function newLoadingToken() {
   return `lq-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -914,6 +947,7 @@ function buildQuoteRequestPayload(prompt, attSnap, extra = {}) {
     message_text: prompt,
     user_prompt: prompt,
     prompt,
+    workflow_state: state.workflowState || "INPUT",
     product_name: hasSheet
       ? state.baseConfig.product_name
       : inferProductName(prompt) || state.baseConfig.product_name,
@@ -929,6 +963,7 @@ function buildQuoteRequestPayload(prompt, attSnap, extra = {}) {
   }
   const firstSheet = attSnap.find((x) => x.kind === "sheet");
   if (firstSheet) {
+    setWorkflowState("PARSED");
     payload.uploaded_sheet = {
       name: firstSheet.name,
       content_base64: firstSheet.content_base64,
@@ -1041,6 +1076,7 @@ async function requestQuote(options = {}) {
       state.lastQaAudit = result.qa_audit || null;
       renderLlmStatus();
       if (isQuoteConfirmationResult(result)) {
+        setWorkflowState("STRUCTURE_CONFIRM");
         const token = `sc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const confirmSnap = buildStructureConfirmRowsFromQuoteResult(result);
         state.pendingStructureConfirm = {
@@ -1072,6 +1108,7 @@ async function requestQuote(options = {}) {
         return;
       }
       if (result.reply_type === "structure_confirmation") {
+        setWorkflowState("STRUCTURE_CONFIRM");
         const token = `sc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const confirmSnap =
           Array.isArray(result.items_confirmation) && result.items_confirmation.length > 0
@@ -7513,6 +7550,7 @@ async function confirmAndGenerateQuote(btn) {
   scrollToBottom();
   try {
     syncPendingStructureRowsToData(pending);
+    setWorkflowState("CONFIRMED");
     const patchItems = buildStructureConfirmationItemsForQuote(pending);
     const manualFields = buildManualRequirementFieldsFromPending(pending);
     const confirmedQuantities = getPendingQuoteQuantities(pending);
@@ -7590,6 +7628,7 @@ async function confirmAndGenerateQuote(btn) {
       return;
     }
     state.pendingStructureConfirm = null;
+    setWorkflowState("CALCULATED");
     applyLlmResponseMeta(result);
     const primaryMsgId = newQuoteMsgId();
     replaceLoadingByToken(loadingToken, {
@@ -8958,6 +8997,7 @@ function initialize() {
   resetAdminUpdatesWorkspaceUi();
   document.body.classList.toggle("is-wecom-browser", state.isWecomBrowser);
   ensureWorkbenchServingNotice();
+  setWorkflowState(state.workflowState || "INPUT");
   renderMessages();
   renderComposerAttachments();
   syncComposerPlaceholder();

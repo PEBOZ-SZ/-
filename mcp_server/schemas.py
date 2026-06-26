@@ -2,14 +2,28 @@ from __future__ import annotations
 
 from typing import Any
 
+from mcp_server.auth import normalize_role
+
 
 ALLOWED_QUOTE_CALCULATE_ROLES = {"sales", "admin"}
+USER_CONTEXT_FIELDS = {
+    "user_id",
+    "user_name",
+    "role",
+    "session_id",
+    "sales_user_id",
+    "sales_user_name",
+    "sales_user_code",
+    "source",
+    "request_id",
+}
 
 
 def normalize_user_context(user_context: Any) -> dict[str, Any]:
     context = dict(user_context) if isinstance(user_context, dict) else {}
-    role = str(context.get("role") or "guest").strip() or "guest"
-    context["role"] = role
+    context["role"] = normalize_role(context.get("role"))
+    for field in USER_CONTEXT_FIELDS:
+        context.setdefault(field, None)
     return context
 
 

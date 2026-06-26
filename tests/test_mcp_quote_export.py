@@ -108,6 +108,37 @@ class McpQuoteExportTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("不存在", result["error"])
 
+    def test_empty_quote_id_returns_mcp_error(self):
+        from mcp_server.tools.quote_export import quote_export
+
+        sample = self._input()
+        sample["query"]["quote_id"] = ""
+        with self._patch_paths():
+            result = quote_export(sample)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["tool"], "quote_export")
+        self.assertIn("quote_id", result["error"])
+
+    def test_pdf_generation_failure_is_isolated_to_mcp_result(self):
+        from mcp_server.tools import quote_export as quote_export_module
+
+        def fail_export(record, export_dir):
+            raise OSError("simulated pdf failure")
+
+        with self._patch_paths(), patch.object(quote_export_module, "_export_pdf", side_effect=fail_export):
+            result = quote_export_module.quote_export(self._input())
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["tool"], "quote_export")
+        self.assertIn("simulated pdf failure", result["error"])
+
+        with self._patch_paths():
+            recovered = quote_export_module.quote_export(self._input())
+
+        self.assertTrue(recovered["ok"])
+        self.assertTrue(Path(recovered["result"]["file_path"]).exists())
+
     def test_file_path_is_generated_from_quote_id(self):
         from mcp_server.tools.quote_export import quote_export
 

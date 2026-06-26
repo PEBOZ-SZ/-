@@ -30,6 +30,11 @@ from admin_auth import (
     verify_backend_admin_cookie,
 )
 from admin_bom_requirement_view import build_admin_bom_requirement_view
+import orchestrator
+
+
+def process_with_orchestrator(payload: dict) -> dict:
+    return orchestrator.process(payload)
 
 
 def _enrich_quote_material_display(quote: dict) -> None:
@@ -4231,6 +4236,17 @@ class QuoteHandler(BaseHTTPRequestHandler):
 
         path_only = _canonical_http_path_only(self.path)
         if self._front_post_reject_blocked_path(path_only):
+            return
+
+        if path_only == "/api/orchestrator/process":
+            payload = self.read_json()
+            if not isinstance(payload, dict):
+                self.write_json(
+                    {"ok": False, "error": "invalid_request", "message": "JSON object required"},
+                    status=400,
+                )
+                return
+            self.write_json(process_with_orchestrator(payload))
             return
 
         if path_only == "/api/auth/sales-identity":

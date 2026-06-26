@@ -10,6 +10,8 @@ from mcp_server.tools.quote_patch_preview import quote_patch_preview
 from mcp_server.tools.quote_save import quote_save
 from mcp_server.tools.quote_export import quote_export
 from mcp_server.tools.quote_admin import quote_admin
+from agent_router import run_agent
+from gpt_tool_router import run_gpt_tool_agent
 
 
 def _sample_input(role: str = "sales", include_items: bool = True) -> dict:
@@ -246,6 +248,88 @@ def _run_quote_admin_case() -> bool:
     return passed
 
 
+def _run_agent_router_case() -> bool:
+    result = run_agent(
+        "保存报价",
+        {
+            "user_context": {
+                "user_id": "sales_001",
+                "role": "sales",
+                "session_id": "sess_agent_self_check",
+            },
+            "quote_result": {
+                "product_name": "测试背包",
+                "tiers": [{"quantity": 300, "exw_price": 88.9}],
+                "total_price": 88.9,
+            },
+        },
+    )
+    passed = (
+        result.get("intent") == "save"
+        and result.get("tool_called") == "quote_save"
+        and bool((result.get("result") or {}).get("ok"))
+    )
+    status = "PASS" if passed else "FAIL"
+    print(f"[AGENT self-check] agent_router: {status} ok={str(passed).lower()}")
+    if not passed:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    return passed
+
+
+class _SelfCheckGptToolClient:
+    def __init__(self):
+        self.calls = 0
+
+    def create(self, messages, tools):
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "message": {
+                    "tool_calls": [
+                        {
+                            "id": "self_check_quote_save",
+                            "function": {
+                                "name": "quote_save",
+                                "arguments": json.dumps(
+                                    {
+                                        "workflow_state": "CALCULATED",
+                                        "user_context": {
+                                            "user_id": "sales_001",
+                                            "role": "sales",
+                                            "session_id": "sess_gpt_tool_self_check",
+                                        },
+                                        "query": {
+                                            "quote_result": {
+                                                "product_name": "测试背包",
+                                                "tiers": [{"quantity": 300, "exw_price": 88.9}],
+                                                "total_price": 88.9,
+                                            }
+                                        },
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            },
+                        }
+                    ]
+                }
+            }
+        return {"message": {"content": "done"}}
+
+
+def _run_gpt_tool_router_case() -> bool:
+    result = run_gpt_tool_agent("保存报价", client=_SelfCheckGptToolClient())
+    passed = (
+        result.get("ok") is True
+        and bool(result.get("tool_calls"))
+        and result["tool_calls"][0].get("tool_called") == "quote_save"
+    )
+    status = "PASS" if passed else "FAIL"
+    print(f"[GPT TOOL ROUTER] self-check: {status} ok={str(passed).lower()}")
+    if not passed:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    return passed
+
+
 def main() -> None:
     print("[MCP self-check] run from project root:")
     print("cd D:/完整版自动报价/自报项目")
@@ -364,6 +448,8 @@ def main() -> None:
         ),
         _run_quote_export_case(),
         _run_quote_admin_case(),
+        _run_agent_router_case(),
+        _run_gpt_tool_router_case(),
     ]
     if all(checks):
         print("[MCP self-check] all checks passed")

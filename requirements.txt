@@ -9,6 +9,10 @@ openpyxl>=3.1.0
 # 读取 Excel 97-2003 .xls（上传）
 xlrd>=2.0.1
 
+# Codex custom MCP STDIO server
+mcp>=1.27.0
+pydantic-settings>=2.5.2
+
 # --- LangGraph 报价智能体编排（quotation_agent/）---
 langgraph>=0.2.0
 langchain-core>=0.3.0

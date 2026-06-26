@@ -7303,3 +7303,35 @@ body.is-wecom-browser .btn-wecom-login {
   margin: 4px 0 0;
   font-size: 0.85rem;
 }
+/* Workflow state machine: visible quote process gate */
+.workflow-stepper {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 16px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  background: #f8fafc;
+}
+
+.workflow-step {
+  border: 1px solid #d7dee8;
+  border-radius: 6px;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1;
+  padding: 7px 8px;
+  white-space: nowrap;
+}
+
+.workflow-step.is-active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-weight: 700;
+}
+
+.workflow-step.is-done {
+  border-color: #16a34a;
+  background: #f0fdf4;
+  color: #15803d;
+}

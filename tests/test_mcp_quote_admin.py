@@ -41,9 +41,15 @@ class McpQuoteAdminTests(unittest.TestCase):
         self.store_path.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
 
     def _input(self, role="admin", action="approve_quote", quote_id=None, payload=None):
+        user_ids = {
+            "admin": "admin_001",
+            "system_admin": "sys_001",
+            "sales": "sales_001",
+            "guest": "guest_001",
+        }
         return {
             "user_context": {
-                "user_id": "admin_001" if role == "admin" else "sales_001",
+                "user_id": user_ids.get(role, "unknown_001"),
                 "role": role,
                 "session_id": "sess_001",
             },
@@ -150,14 +156,14 @@ class McpQuoteAdminTests(unittest.TestCase):
         self.assertEqual(latest["status"], "rejected")
         self.assertFalse(latest["frozen"])
 
-    def test_view_quote_returns_exported_status(self):
+    def test_admin_view_quote_returns_exported_status(self):
         from mcp_server.tools.quote_admin import quote_admin
 
         self._write_quote(status="exported", frozen=False)
         before = self.store_path.read_text(encoding="utf-8")
 
         with self._patch_paths():
-            result = quote_admin(self._input(role="sales", action="view_quote"))
+            result = quote_admin(self._input(role="admin", action="view_quote"))
 
         after = self.store_path.read_text(encoding="utf-8")
         self.assertTrue(result["ok"])
@@ -178,17 +184,26 @@ class McpQuoteAdminTests(unittest.TestCase):
         self.assertFalse(unfrozen["result"]["frozen"])
         self.assertFalse(self._latest_record()["frozen"])
 
-    def test_sales_can_only_view_quote(self):
+    def test_sales_cannot_call_quote_admin_actions(self):
         from mcp_server.tools.quote_admin import quote_admin
 
         with self._patch_paths():
             view = quote_admin(self._input(role="sales", action="view_quote"))
             approve = quote_admin(self._input(role="sales", action="approve_quote"))
 
-        self.assertTrue(view["ok"])
-        self.assertEqual(view["result"]["action"], "view_quote")
+        self.assertFalse(view["ok"])
+        self.assertIn("无权", view["error"])
         self.assertFalse(approve["ok"])
         self.assertIn("无权", approve["error"])
+
+    def test_system_admin_approve_quote_success(self):
+        from mcp_server.tools.quote_admin import quote_admin
+
+        with self._patch_paths():
+            result = quote_admin(self._input(role="system_admin", action="approve_quote"))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["result"]["status"], "approved")
 
     def test_guest_is_denied(self):
         from mcp_server.tools.quote_admin import quote_admin
@@ -199,13 +214,21 @@ class McpQuoteAdminTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("无权", result["error"])
 
-    def test_update_price_rule_admin_only_and_does_not_touch_price_kb(self):
+    def test_update_price_rule_system_admin_only_and_does_not_touch_price_kb(self):
         from mcp_server.tools.quote_admin import quote_admin
 
         with self._patch_paths(), patch("price_kb.get_price_kb") as get_price_kb:
             admin = quote_admin(
                 self._input(
                     role="admin",
+                    action="update_price_rule",
+                    quote_id="",
+                    payload={"rule": "拉链价格需复核"},
+                )
+            )
+            system_admin = quote_admin(
+                self._input(
+                    role="system_admin",
                     action="update_price_rule",
                     quote_id="",
                     payload={"rule": "拉链价格需复核"},
@@ -220,11 +243,36 @@ class McpQuoteAdminTests(unittest.TestCase):
                 )
             )
 
-        self.assertTrue(admin["ok"])
-        self.assertEqual(admin["result"]["status"], "rule_updated")
+        self.assertFalse(admin["ok"])
+        self.assertIn("无权", admin["error"])
+        self.assertTrue(system_admin["ok"])
+        self.assertEqual(system_admin["result"]["status"], "rule_updated")
         self.assertTrue(self.rules_path.exists())
         self.assertFalse(sales["ok"])
         get_price_kb.assert_not_called()
+
+    def test_unknown_role_is_denied(self):
+        from mcp_server.tools.quote_admin import quote_admin
+
+        with self._patch_paths():
+            result = quote_admin(self._input(role="owner", action="approve_quote"))
+
+        self.assertFalse(result["ok"])
+        self.assertIn("无权", result["error"])
+
+    def test_reserved_system_admin_tools_are_system_admin_only(self):
+        from mcp_server.auth import require_tool_permission
+
+        require_tool_permission({"role": "system_admin"}, "price_update")
+        require_tool_permission({"role": "system_admin"}, "knowledge_apply")
+        require_tool_permission({"role": "system_admin"}, "mcp_audit_view")
+
+        with self.assertRaises(PermissionError):
+            require_tool_permission({"role": "admin"}, "price_update")
+        with self.assertRaises(PermissionError):
+            require_tool_permission({"role": "sales"}, "knowledge_apply")
+        with self.assertRaises(PermissionError):
+            require_tool_permission({"role": "guest"}, "mcp_audit_view")
 
     def test_does_not_call_quote_engine(self):
         from mcp_server.tools.quote_admin import quote_admin

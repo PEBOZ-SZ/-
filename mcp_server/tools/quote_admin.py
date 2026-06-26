@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp_server.audit import write_audit_log
+from mcp_server.auth import require_tool_permission
 from mcp_server.sanitizer import sanitize_quote_admin_result
 from mcp_server.schemas import normalize_user_context, validate_quote_admin_input
 from mcp_server.tools.quote_save import QUOTE_SAVE_STORE_PATH
@@ -13,15 +14,6 @@ from mcp_server.tools.quote_save import QUOTE_SAVE_STORE_PATH
 
 TOOL_NAME = "quote_admin"
 QUOTE_ADMIN_PRICE_RULE_PATH = Path("data") / "mcp_price_rules_admin.jsonl"
-
-ADMIN_ONLY_ACTIONS = {
-    "approve_quote",
-    "reject_quote",
-    "freeze_quote",
-    "unfreeze_quote",
-    "mark_exported",
-    "update_price_rule",
-}
 
 VALID_QUOTE_STATUSES = {"draft", "saved", "approved", "exported", "rejected"}
 
@@ -81,14 +73,6 @@ def _current_status(record: dict[str, Any]) -> str:
 def _ensure_not_frozen(record: dict[str, Any], action_name: str) -> None:
     if record.get("frozen"):
         raise ValueError(f"报价已冻结，不能执行 {action_name}。")
-
-
-def _ensure_action_permission(role: str, action: str) -> None:
-    if role == "admin":
-        return
-    if role == "sales" and action == "view_quote":
-        return
-    raise PermissionError(f"当前角色无权调用 {TOOL_NAME}。")
 
 
 def _transition_quote_legacy(action: str, quote_id: str) -> dict[str, Any]:
@@ -248,7 +232,7 @@ def quote_admin(input_data: dict) -> dict:
         action = query["action"]
         quote_id = query["quote_id"]
         role = str(user_context.get("role") or "guest")
-        _ensure_action_permission(role, action)
+        require_tool_permission(user_context, TOOL_NAME, action=action)
 
         if action == "update_price_rule":
             result = _update_price_rule(user_context, query.get("payload") or {})

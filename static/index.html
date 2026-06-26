@@ -63,6 +63,15 @@
               <button type="button" id="btnAdminUpdatesBanner" class="admin-updates-banner-btn"></button>
             </div>
 
+            <section id="workflowStepper" class="workflow-stepper" aria-label="报价流程状态">
+              <span class="workflow-step is-active" data-workflow-step="INPUT">INPUT</span>
+              <span class="workflow-step" data-workflow-step="STRUCTURE_PARSE">STRUCTURE_PARSE</span>
+              <span class="workflow-step" data-workflow-step="STRUCTURE_CONFIRM">STRUCTURE_CONFIRM</span>
+              <span class="workflow-step" data-workflow-step="QUOTE_CALCULATE">QUOTE_CALCULATE</span>
+              <span class="workflow-step" data-workflow-step="QUOTE_SAVE">QUOTE_SAVE</span>
+              <span class="workflow-step" data-workflow-step="QUOTE_EXPORT">QUOTE_EXPORT</span>
+            </section>
+
             <section id="messageList" class="message-list" aria-live="polite">
               <div id="adminCorrectionResultPanel" class="admin-correction-result-panel" hidden aria-live="polite"></div>
               <div id="chatMessages"></div>

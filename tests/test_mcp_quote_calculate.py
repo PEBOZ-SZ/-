@@ -50,10 +50,38 @@ class McpQuoteCalculateTests(unittest.TestCase):
         self.assertNotIn("debug", result["result"])
         bridge.assert_called_once()
 
+    def test_admin_role_can_quote_calculate(self):
+        from mcp_server.tools.quote_calculate import quote_calculate
+
+        with patch("quotation_agent.calculator_bridge.run_calculate_quote") as bridge:
+            bridge.return_value = {"product_name": "测试背包"}
+            result = quote_calculate(self._input(role="admin"))
+
+        self.assertTrue(result["ok"])
+        bridge.assert_called_once()
+
+    def test_system_admin_role_can_quote_calculate(self):
+        from mcp_server.tools.quote_calculate import quote_calculate
+
+        with patch("quotation_agent.calculator_bridge.run_calculate_quote") as bridge:
+            bridge.return_value = {"product_name": "测试背包"}
+            result = quote_calculate(self._input(role="system_admin"))
+
+        self.assertTrue(result["ok"])
+        bridge.assert_called_once()
+
     def test_guest_role_returns_permission_error(self):
         from mcp_server.tools.quote_calculate import quote_calculate
 
         result = quote_calculate(self._input(role="guest"))
+
+        self.assertFalse(result["ok"])
+        self.assertIn("无权", result["error"])
+
+    def test_unknown_role_is_treated_as_guest(self):
+        from mcp_server.tools.quote_calculate import quote_calculate
+
+        result = quote_calculate(self._input(role="owner"))
 
         self.assertFalse(result["ok"])
         self.assertIn("无权", result["error"])
