@@ -66,12 +66,17 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_server.tools.price_lookup import price_lookup as _price_lookup
 from mcp_server.tools.quote_admin import quote_admin as _quote_admin
+from mcp_server.tools.quote_approval_status import quote_approval_status as _quote_approval_status
 from mcp_server.tools.quote_calculate import quote_calculate as _quote_calculate
 from mcp_server.tools.quote_explain import quote_explain as _quote_explain
 from mcp_server.tools.quote_export import quote_export as _quote_export
+from mcp_server.tools.quote_export_pdf import quote_export_pdf as _quote_export_pdf
+from mcp_server.tools.quote_get_detail import quote_get_detail as _quote_get_detail
+from mcp_server.tools.quote_get_history import quote_get_history as _quote_get_history
 from mcp_server.tools.quote_patch_preview import quote_patch_preview as _quote_patch_preview
 from mcp_server.tools.quote_qa import quote_qa as _quote_qa
 from mcp_server.tools.quote_save import quote_save as _quote_save
+from mcp_server.tools.quote_sheet_preview import quote_sheet_preview as _quote_sheet_preview
 
 
 SERVER_NAME = "mcp-quote-system"
@@ -85,6 +90,11 @@ TOOL_REGISTRY: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "quote_patch_preview": _quote_patch_preview,
     "quote_save": _quote_save,
     "quote_export": _quote_export,
+    "quote_export_pdf": _quote_export_pdf,
+    "quote_approval_status": _quote_approval_status,
+    "quote_get_history": _quote_get_history,
+    "quote_get_detail": _quote_get_detail,
+    "quote_sheet_preview": _quote_sheet_preview,
     "quote_admin": _quote_admin,
 }
 
@@ -136,6 +146,31 @@ def quote_save(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
 @mcp.tool(description="Export a saved quote through the existing quote_export tool.")
 def quote_export(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
     return _call_existing_tool("quote_export", input_data)
+
+
+@mcp.tool(description="Export a saved formal quote sheet PDF from original quote storage.")
+def quote_export_pdf(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _call_existing_tool("quote_export_pdf", input_data)
+
+
+@mcp.tool(description="Readonly approval status and admin feedback summary for a saved quote.")
+def quote_approval_status(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _call_existing_tool("quote_approval_status", input_data)
+
+
+@mcp.tool(description="List saved quote history through the original quote storage.")
+def quote_get_history(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _call_existing_tool("quote_get_history", input_data)
+
+
+@mcp.tool(description="Load one saved quote detail and version data through the original quote storage.")
+def quote_get_detail(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _call_existing_tool("quote_get_detail", input_data)
+
+
+@mcp.tool(description="Build a saved quote sheet preview URL and controlled prefill summary.")
+def quote_sheet_preview(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _call_existing_tool("quote_sheet_preview", input_data)
 
 
 @mcp.tool(description="Run quote admin actions through the existing quote_admin tool.")

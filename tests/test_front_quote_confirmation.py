@@ -170,5 +170,70 @@ class FrontQuoteConfirmationContractTest(unittest.TestCase):
         self.assertIn("sizes.join", chunk)
 
 
+    def test_chat_quote_draft_agent_endpoint_is_wired(self) -> None:
+        text = _app_js_text()
+        self.assertIn('"/api/quote/agent"', text)
+        self.assertIn("function shouldUseQuoteDraftAgent", text)
+        self.assertIn("function buildQuoteDraftAgentRequest", text)
+        self.assertIn("function handleQuoteDraftAgentResult", text)
+
+    def test_draft_edit_intent_uses_agent_before_upload_quote_flow(self) -> None:
+        text = _app_js_text()
+        request_start = text.index("async function requestQuote")
+        request_chunk = text[request_start : request_start + 3500]
+        self.assertIn("shouldUseQuoteDraftAgent(prompt, attSnap)", request_chunk)
+        self.assertIn("sendQuoteDraftAgentMessage", request_chunk)
+        self.assertLess(
+            request_chunk.index("sendQuoteDraftAgentMessage"),
+            request_chunk.index("buildQuoteRequestPayload"),
+        )
+
+    def test_agent_quote_updated_reuses_quote_card_rendering(self) -> None:
+        text = _app_js_text()
+        start = text.index("function handleQuoteDraftAgentResult")
+        chunk = text[start : start + 4500]
+        self.assertIn('agentType === "quote_updated"', chunk)
+        self.assertIn('type: "quote_card"', chunk)
+        self.assertIn("newQuoteMsgId()", chunk)
+        self.assertIn("state.sessionContext", chunk)
+        self.assertIn("quoteData: quoteResult", chunk)
+
+    def test_agent_clarify_shows_assistant_message_and_missing_fields(self) -> None:
+        text = _app_js_text()
+        start = text.index("function handleQuoteDraftAgentResult")
+        chunk = text[start : start + 4500]
+        self.assertIn('agentType === "clarify"', chunk)
+        self.assertIn("agentAssistantMessage(result)", chunk)
+        self.assertIn("formatQuoteDraftAgentMissingConfirmations", chunk)
+        self.assertIn("missing_fields", chunk)
+        self.assertIn("risk_flags", chunk)
+
+    def test_agent_saved_shows_pending_approval_hint(self) -> None:
+        text = _app_js_text()
+        start = text.index("function handleQuoteDraftAgentResult")
+        chunk = text[start : start + 4500]
+        self.assertIn('agentType === "saved"', chunk)
+        self.assertIn("\u5df2\u4fdd\u5b58\u5e76\u63d0\u4ea4\u5ba1\u6279\uff0c\u5f53\u524d\u72b6\u6001\uff1a\u5f85\u7ba1\u7406\u5458\u5ba1\u6279", chunk)
+        self.assertIn('approval_status: "pending"', chunk)
+
+    def test_original_upload_quote_and_confirm_button_flows_remain(self) -> None:
+        text = _app_js_text()
+        self.assertIn('"/api/quote"', text)
+        self.assertIn("postQuoteWithSalesIdentityRetry", text)
+        self.assertIn("async function confirmAndGenerateQuote", text)
+        self.assertIn("data-quote-pre-confirm-submit", text)
+
+    def test_quote_sheet_deep_link_opens_record_prefill(self) -> None:
+        text = _app_js_text()
+        self.assertIn("function openInitialQuoteSheetDeepLink", text)
+        start = text.index("function openInitialQuoteSheetDeepLink")
+        chunk = text[start : start + 1400]
+        self.assertIn('params.get("quote_uid")', chunk)
+        self.assertIn('params.get("view")', chunk)
+        self.assertIn('"quoteSheet"', chunk)
+        self.assertIn("openQuoteSheetFromRecord", chunk)
+        self.assertIn('source: "record"', chunk)
+
+
 if __name__ == "__main__":
     unittest.main()

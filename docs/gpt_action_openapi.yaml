@@ -1,0 +1,216 @@
+﻿openapi: 3.1.0
+info:
+  title: Auto Quote Agent Action
+  version: 0.2.0
+  description: >
+    Safe Custom GPT Action gateway for quote drafts. The Action can create or
+    update a draft, request recalculation through the existing quote engine,
+    and submit a confirmed draft for pending review. It does not expose
+    internal management, export, or final review endpoints.
+servers:
+  - url: https://weilai-pxj.com
+paths:
+  /gpt/quote-agent:
+    post:
+      operationId: quoteAgent
+      summary: Update, recalculate, clarify, or submit an auto quote draft
+      description: >
+        Send the user's Chinese instruction to the quote draft agent. Pricing is
+        produced only by the existing backend quote calculation tool. Formal
+        saving is blocked while missing_fields or risk_flags remain.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QuoteAgentRequest"
+            examples:
+              updateQuantityAndPrice:
+                summary: Update quantity and PU material price
+                value:
+                  session_id: gpt-session-001
+                  message: "数量改300，PU料按6.5"
+                  payload:
+                    product_name: "测试包"
+                    quantities:
+                      - 500
+                    items:
+                      - name: "PU料"
+                        usage: "0.5平方"
+                        unit_price: "6元"
+              confirmSave:
+                summary: Confirm save and submit for pending review
+                value:
+                  session_id: gpt-session-001
+                  message: "确认保存"
+      responses:
+        "200":
+          description: Quote agent result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuoteAgentResponse"
+              examples:
+                quoteUpdated:
+                  summary: Draft updated and recalculated
+                  value:
+                    ok: true
+                    type: quote_updated
+                    assistant_message: "报价草稿已更新，并由系统重新计算。"
+                    draft:
+                      session_id: gpt-session-001
+                      quantities:
+                        - 300
+                    quote_result:
+                      quote_id: quote_calc_001
+                      approval_status: draft
+                    missing_fields: []
+                    risk_flags: []
+                clarify:
+                  summary: More information is required
+                  value:
+                    ok: true
+                    type: clarify
+                    assistant_message: "现在还不能保存正式报价，还需确认：箱子是否参与报价。"
+                    draft:
+                      session_id: gpt-session-001
+                    quote_result:
+                      quote_id: quote_calc_001
+                    missing_fields: []
+                    risk_flags:
+                      - "箱子是否参与报价"
+                saved:
+                  summary: Draft saved and submitted with pending status
+                  value:
+                    ok: true
+                    type: saved
+                    assistant_message: "已保存并提交，当前状态：待管理员处理。"
+                    draft:
+                      session_id: gpt-session-001
+                    quote_result:
+                      quote_id: quote_calc_001
+                      approval_status: pending
+                    missing_fields: []
+                    risk_flags: []
+        "400":
+          description: Invalid request body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuoteAgentResponse"
+              examples:
+                invalidMessage:
+                  summary: Missing message
+                  value:
+                    ok: false
+                    type: error
+                    assistant_message: "缺少 message。"
+                    draft: null
+                    quote_result: null
+                    missing_fields: []
+                    risk_flags: []
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuoteAgentResponse"
+              examples:
+                unauthorized:
+                  summary: Token is missing or invalid
+                  value:
+                    ok: false
+                    type: error
+                    assistant_message: "未授权的 GPT Action 调用。"
+                    draft: null
+                    quote_result: null
+                    missing_fields: []
+                    risk_flags: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: GPT_ACTION_TOKEN
+  schemas:
+    QuoteAgentRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - session_id
+        - message
+      properties:
+        session_id:
+          type: string
+          minLength: 1
+          description: Stable conversation or quote draft session id from the Custom GPT.
+        message:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: Original Chinese user instruction, such as "数量改300，PU料按6.5" or "确认保存".
+        payload:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: Structured quote input from the auto quote system, used to seed a draft when present.
+        quote_result:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: Existing calculation result from the auto quote system, used to seed or refresh a draft when present.
+        user_context:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: Optional sales user context. The gateway defaults to a sales quote-agent identity.
+    QuoteAgentResponse:
+      type: object
+      additionalProperties: true
+      required:
+        - ok
+        - type
+        - assistant_message
+        - draft
+        - quote_result
+        - missing_fields
+        - risk_flags
+      properties:
+        ok:
+          type: boolean
+        type:
+          type: string
+          enum:
+            - quote_updated
+            - clarify
+            - saved
+            - error
+        assistant_message:
+          type: string
+          description: Chinese message suitable for the GPT to summarize to the user.
+        draft:
+          type:
+            - object
+            - "null"
+          additionalProperties: true
+        quote_result:
+          type:
+            - object
+            - "null"
+          additionalProperties: true
+        missing_fields:
+          type: array
+          items:
+            type: string
+        risk_flags:
+          type: array
+          items:
+            type: string
+        save_result:
+          type:
+            - object
+            - "null"
+          additionalProperties: true
+

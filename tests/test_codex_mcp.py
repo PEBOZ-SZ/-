@@ -22,6 +22,11 @@ class CodexMcpServerTests(unittest.TestCase):
                 "quote_patch_preview",
                 "quote_save",
                 "quote_export",
+                "quote_export_pdf",
+                "quote_approval_status",
+                "quote_get_history",
+                "quote_get_detail",
+                "quote_sheet_preview",
                 "quote_admin",
             },
         )
@@ -53,6 +58,11 @@ class CodexMcpServerTests(unittest.TestCase):
                     "quote_patch_preview",
                     "quote_save",
                     "quote_export",
+                    "quote_export_pdf",
+                    "quote_approval_status",
+                    "quote_get_history",
+                    "quote_get_detail",
+                    "quote_sheet_preview",
                     "quote_admin",
                 },
             )

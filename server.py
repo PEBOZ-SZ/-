@@ -5,6 +5,7 @@ import base64
 import copy
 import csv
 import errno
+import hmac
 import json
 import mimetypes
 import os
@@ -35,6 +36,312 @@ import orchestrator
 
 def process_with_orchestrator(payload: dict) -> dict:
     return orchestrator.process(payload)
+
+
+def _quote_agent_user_context(session_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = payload if isinstance(payload, dict) else {}
+    raw = payload.get("user_context") if isinstance(payload.get("user_context"), dict) else {}
+    return {
+        "user_id": str(raw.get("user_id") or raw.get("sales_user_id") or "quote_agent").strip(),
+        "user_name": str(raw.get("user_name") or raw.get("sales_user_name") or "quote_agent").strip(),
+        "role": str(raw.get("role") or "sales").strip() or "sales",
+        "session_id": session_id,
+        "sales_user_id": str(raw.get("sales_user_id") or raw.get("user_id") or "quote_agent").strip(),
+        "sales_user_name": str(raw.get("sales_user_name") or raw.get("user_name") or "quote_agent").strip(),
+    }
+
+
+def _quote_agent_has_blocking_risk(draft: dict[str, Any]) -> bool:
+    return bool(draft.get("missing_fields") or draft.get("risk_flags"))
+
+
+def _gpt_action_error(message: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "type": "error",
+        "assistant_message": message,
+        "draft": None,
+        "quote_result": None,
+        "missing_fields": [],
+        "risk_flags": [],
+    }
+
+
+def _quote_agent_risk_message(draft: dict[str, Any]) -> str:
+    risks = [str(x) for x in (draft.get("missing_fields") or []) + (draft.get("risk_flags") or []) if str(x).strip()]
+    if not risks:
+        return ""
+    return "现在还不能保存正式报价，还需确认：" + "；".join(risks)
+
+
+def _quote_agent_recalculate(session_id: str, draft: dict[str, Any], request_payload: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    from quote_draft_store import quote_draft_to_calculate_payload, update_quote_draft
+
+    calc_payload = quote_draft_to_calculate_payload(draft)
+    result = quote_calculate(
+        {
+            "user_context": _quote_agent_user_context(session_id, request_payload),
+            "payload": calc_payload,
+        }
+    )
+    if not isinstance(result, dict) or not result.get("ok"):
+        return None, draft
+    quote_result = result.get("result") if isinstance(result.get("result"), dict) else None
+    if not isinstance(quote_result, dict):
+        return None, draft
+    updated = update_quote_draft(
+        session_id,
+        [{"op": "set_source_quote_result", "quote_result": quote_result}],
+    )
+    return quote_result, updated
+
+
+def handle_quote_agent_request(request: dict[str, Any]) -> dict[str, Any]:
+    from quote_draft_patch import parse_quote_draft_patches
+    from quote_draft_store import create_quote_draft, get_quote_draft, update_quote_draft
+
+    if not isinstance(request, dict):
+        return {"ok": False, "type": "error", "assistant_message": "请求体必须是 JSON 对象。"}
+
+    session_id = str(request.get("session_id") or "").strip()
+    if not session_id:
+        session_id = str(request.get("sid") or request.get("quote_session_id") or "").strip()
+    if not session_id:
+        return {"ok": False, "type": "error", "assistant_message": "缺少 session_id。"}
+
+    payload = request.get("payload") if isinstance(request.get("payload"), dict) else None
+    quote_result = request.get("quote_result") if isinstance(request.get("quote_result"), dict) else None
+    draft = get_quote_draft(session_id)
+    if draft is None:
+        draft = create_quote_draft(session_id, source_payload=payload, quote_result=quote_result)
+
+    message = str(request.get("message") or request.get("user_text") or "").strip()
+    parsed = parse_quote_draft_patches(message, draft)
+    intent = parsed.get("intent")
+
+    if intent == "clarify":
+        return {
+            "ok": True,
+            "type": "clarify",
+            "assistant_message": parsed.get("assistant_message") or "请说具体一点。",
+            "draft": draft,
+            "quote_result": draft.get("source_quote_result") if isinstance(draft.get("source_quote_result"), dict) else {},
+            "missing_fields": draft.get("missing_fields") or [],
+            "risk_flags": draft.get("risk_flags") or [],
+        }
+
+    if intent == "patch_draft":
+        draft = update_quote_draft(session_id, parsed.get("patches") or [])
+        quote_result_out = None
+        if parsed.get("needs_recalculate"):
+            quote_result_out, draft = _quote_agent_recalculate(session_id, draft, request)
+        return {
+            "ok": True,
+            "type": "quote_updated",
+            "assistant_message": parsed.get("assistant_message") or "报价草稿已更新，并由系统重新计算。",
+            "draft": draft,
+            "quote_result": quote_result_out or {},
+            "missing_fields": draft.get("missing_fields") or [],
+            "risk_flags": draft.get("risk_flags") or [],
+        }
+
+    if intent == "recalculate":
+        quote_result_out, draft = _quote_agent_recalculate(session_id, draft, request)
+        if quote_result_out is None:
+            return {
+                "ok": False,
+                "type": "error",
+                "assistant_message": "按当前草稿重新计算失败，请检查材料、用量和单价是否完整。",
+                "draft": draft,
+                "quote_result": {},
+                "missing_fields": draft.get("missing_fields") or [],
+                "risk_flags": draft.get("risk_flags") or [],
+            }
+        return {
+            "ok": True,
+            "type": "quote_updated",
+            "assistant_message": parsed.get("assistant_message") or "已按当前草稿重新计算。",
+            "draft": draft,
+            "quote_result": quote_result_out,
+            "missing_fields": draft.get("missing_fields") or [],
+            "risk_flags": draft.get("risk_flags") or [],
+        }
+
+    if intent == "confirm_save":
+        if _quote_agent_has_blocking_risk(draft):
+            return {
+                "ok": True,
+                "type": "clarify",
+                "assistant_message": _quote_agent_risk_message(draft) or "还有关键风险未确认，暂不保存正式报价。",
+                "draft": draft,
+                "quote_result": draft.get("source_quote_result") if isinstance(draft.get("source_quote_result"), dict) else {},
+                "missing_fields": draft.get("missing_fields") or [],
+                "risk_flags": draft.get("risk_flags") or [],
+            }
+        quote_result_to_save = draft.get("source_quote_result") if isinstance(draft.get("source_quote_result"), dict) else {}
+        if not quote_result_to_save.get("quote_id"):
+            quote_result_to_save, draft = _quote_agent_recalculate(session_id, draft, request)
+        if not isinstance(quote_result_to_save, dict) or not quote_result_to_save.get("quote_id"):
+            return {
+                "ok": False,
+                "type": "error",
+                "assistant_message": "当前草稿还没有可保存的报价结果，请先重新计算。",
+                "draft": draft,
+                "quote_result": {},
+                "missing_fields": draft.get("missing_fields") or [],
+                "risk_flags": draft.get("risk_flags") or [],
+            }
+        quote_result_to_save = copy.deepcopy(quote_result_to_save)
+        quote_result_to_save["approval_status"] = "pending"
+        save_result = quote_save(
+            {
+                "user_context": _quote_agent_user_context(session_id, request),
+                "query": {
+                    "quote_result": quote_result_to_save,
+                    "structured_input": draft.get("source_payload") if isinstance(draft.get("source_payload"), dict) else {},
+                    "quote_mode": quote_result_to_save.get("quote_mode") or "draft_mode",
+                    "validation_status": quote_result_to_save.get("validation_status") or "passed",
+                },
+            }
+        )
+        if not isinstance(save_result, dict) or not save_result.get("ok"):
+            return {
+                "ok": False,
+                "type": "error",
+                "assistant_message": str((save_result or {}).get("error") or "正式保存失败。"),
+                "draft": draft,
+                "quote_result": quote_result_to_save,
+                "missing_fields": draft.get("missing_fields") or [],
+                "risk_flags": draft.get("risk_flags") or [],
+            }
+        draft = update_quote_draft(
+            session_id,
+            [{"op": "set_source_quote_result", "quote_result": quote_result_to_save}],
+        )
+        return {
+            "ok": True,
+            "type": "saved",
+            "assistant_message": "已保存并提交审批，当前状态：待管理员审批。",
+            "draft": draft,
+            "quote_result": quote_result_to_save,
+            "save_result": save_result.get("result"),
+            "missing_fields": [],
+            "risk_flags": [],
+        }
+
+    return {
+        "ok": True,
+        "type": "clarify",
+        "assistant_message": "我还没理解这次要修改报价草稿还是保存，请说具体一点。",
+        "draft": draft,
+        "quote_result": draft.get("source_quote_result") if isinstance(draft.get("source_quote_result"), dict) else {},
+        "missing_fields": draft.get("missing_fields") or [],
+        "risk_flags": draft.get("risk_flags") or [],
+    }
+
+
+def _extract_bearer_token(authorization: str | None) -> str:
+    text = str(authorization or "").strip()
+    prefix = "Bearer "
+    if not text.startswith(prefix):
+        return ""
+    return text[len(prefix) :].strip()
+
+
+def _gpt_action_auth_error(authorization: str | None) -> dict[str, Any] | None:
+    expected = str(os.environ.get("GPT_ACTION_TOKEN") or "").strip()
+    provided = _extract_bearer_token(authorization)
+    if not expected or not provided or not hmac.compare_digest(provided, expected):
+        return _gpt_action_error("未授权的 GPT Action 调用。")
+    return None
+
+
+def _normalize_gpt_action_error_result(result: dict[str, Any]) -> dict[str, Any]:
+    message = str(
+        result.get("assistant_message")
+        or result.get("message")
+        or result.get("error")
+        or "GPT Action 调用失败。"
+    )
+    return _gpt_action_error(message)
+
+
+def _message_summary(message: object, limit: int = 120) -> str:
+    text = re.sub(r"\s+", " ", str(message or "")).strip()
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _quote_id_from_agent_result(result: dict[str, Any]) -> str:
+    quote_result = result.get("quote_result") if isinstance(result.get("quote_result"), dict) else {}
+    return str(quote_result.get("quote_id") or quote_result.get("quote_uid") or "").strip()
+
+
+def _write_gpt_action_audit(
+    *,
+    request_id: str,
+    request: dict[str, Any] | None,
+    result: dict[str, Any],
+) -> None:
+    try:
+        request_dict = request if isinstance(request, dict) else {}
+        missing_fields = result.get("missing_fields") if isinstance(result.get("missing_fields"), list) else []
+        risk_flags = result.get("risk_flags") if isinstance(result.get("risk_flags"), list) else []
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "request_id": str(request_id or "").strip() or _short_request_id(),
+            "session_id": str(request_dict.get("session_id") or request_dict.get("sid") or request_dict.get("quote_session_id") or "").strip(),
+            "message_summary": _message_summary(request_dict.get("message") or request_dict.get("user_text")),
+            "type": str(result.get("type") or ""),
+            "ok": bool(result.get("ok")),
+            "missing_fields_count": len(missing_fields),
+            "risk_flags_count": len(risk_flags),
+            "quote_id": _quote_id_from_agent_result(result),
+            "saved": str(result.get("type") or "") == "saved",
+        }
+        GPT_ACTION_AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with GPT_ACTION_AUDIT_PATH.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except Exception:
+        return
+
+
+def _validate_gpt_quote_agent_request(request: object) -> tuple[int, dict[str, Any] | None]:
+    if not isinstance(request, dict):
+        return 400, _gpt_action_error("请求体必须是 JSON 对象。")
+    session_id = str(request.get("session_id") or request.get("sid") or request.get("quote_session_id") or "").strip()
+    if not session_id:
+        return 400, _gpt_action_error("缺少 session_id。")
+    message = str(request.get("message") or request.get("user_text") or "").strip()
+    if not message:
+        return 400, _gpt_action_error("缺少 message。")
+    if len(message) > 2000:
+        return 400, _gpt_action_error("message 不能超过 2000 字。")
+    if "payload" in request and request.get("payload") is not None and not isinstance(request.get("payload"), dict):
+        return 400, _gpt_action_error("payload 必须是 JSON 对象。")
+    if "quote_result" in request and request.get("quote_result") is not None and not isinstance(request.get("quote_result"), dict):
+        return 400, _gpt_action_error("quote_result 必须是 JSON 对象。")
+    return 200, None
+
+
+def handle_gpt_quote_agent_request(
+    request: dict[str, Any],
+    authorization: str | None,
+    request_id: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    rid = str(request_id or "").strip() or _short_request_id()
+    auth_error = _gpt_action_auth_error(authorization)
+    if auth_error is not None:
+        _write_gpt_action_audit(request_id=rid, request=request if isinstance(request, dict) else None, result=auth_error)
+        return 401, auth_error
+    status, error = _validate_gpt_quote_agent_request(request)
+    if error is not None:
+        _write_gpt_action_audit(request_id=rid, request=request if isinstance(request, dict) else None, result=error)
+        return status, error
+    result = handle_quote_agent_request(request)
+    if not result.get("ok") or result.get("type") == "error":
+        result = _normalize_gpt_action_error_result(result)
+    _write_gpt_action_audit(request_id=rid, request=request, result=result)
+    return 200, result
 
 
 def _enrich_quote_material_display(quote: dict) -> None:
@@ -257,6 +564,8 @@ from prompt_intent import (
     user_prompt_has_quote_intent,
 )
 from quote_engine import calculate_quote, reconcile_row_amount_after_unit_price_change
+from mcp_server.tools.quote_calculate import quote_calculate
+from mcp_server.tools.quote_save import quote_save
 from multi_size_quote import calculate_quote_with_size_variants
 from size_variants import enrich_payload_size_variants
 from quote_validation_gate import apply_pricing_gate
@@ -383,6 +692,7 @@ from simple_bom_parser import (
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
 FEEDBACK_FILE = ROOT / "data" / "manual_feedback.csv"
+GPT_ACTION_AUDIT_PATH = ROOT / "logs" / "gpt_action_audit.jsonl"
 _LOCK_HANDLE = None
 
 _AGENT_GRAPH_LOCK = threading.Lock()
@@ -3035,6 +3345,9 @@ class QuoteHandler(BaseHTTPRequestHandler):
 
         parsed_req = urlparse(self.path)
         front_path = parsed_req.path.rstrip("/") or "/"
+        if front_path.startswith("/gpt/"):
+            self.write_json(_gpt_action_error("GPT Action 只允许 POST 调用。"), status=405)
+            return
         if front_path == "/" or front_path == "/index.html":
             if _should_auto_wecom_oauth_on_front_entry(self):
                 _redirect_wecom_front_entry_login(self, return_path="/")
@@ -4236,6 +4549,62 @@ class QuoteHandler(BaseHTTPRequestHandler):
 
         path_only = _canonical_http_path_only(self.path)
         if self._front_post_reject_blocked_path(path_only):
+            return
+
+        if path_only == "/api/quote/agent":
+            payload = self.read_json()
+            if not isinstance(payload, dict):
+                self.write_json(
+                    {"ok": False, "type": "error", "assistant_message": "请求体必须是 JSON 对象。"},
+                    status=400,
+                )
+                return
+            self.write_json(handle_quote_agent_request(payload))
+            return
+
+        if path_only == "/gpt/quote-agent":
+            auth_error = _gpt_action_auth_error(self.headers.get("Authorization"))
+            if auth_error is not None:
+                self._discard_request_body()
+                _write_gpt_action_audit(
+                    request_id=getattr(self, "_request_id", ""),
+                    request=None,
+                    result=auth_error,
+                )
+                self.write_json(auth_error, status=401)
+                return
+            payload = self.read_json_value()
+            if not isinstance(payload, dict):
+                self.write_json(_gpt_action_error("请求体必须是 JSON 对象。"), status=400)
+                return
+            status, result = handle_gpt_quote_agent_request(
+                payload,
+                self.headers.get("Authorization"),
+                getattr(self, "_request_id", ""),
+            )
+            self.write_json(result, status=status)
+            return
+
+        if path_only.startswith("/gpt/"):
+            auth_error = _gpt_action_auth_error(self.headers.get("Authorization"))
+            if auth_error is not None:
+                self._discard_request_body()
+                _write_gpt_action_audit(
+                    request_id=getattr(self, "_request_id", ""),
+                    request=None,
+                    result=auth_error,
+                )
+                self.write_json(auth_error, status=401)
+                return
+            payload = self.read_json_value()
+            request = payload if isinstance(payload, dict) else None
+            result = _gpt_action_error("未知的 GPT Action。")
+            _write_gpt_action_audit(
+                request_id=getattr(self, "_request_id", ""),
+                request=request,
+                result=result,
+            )
+            self.write_json(result, status=404)
             return
 
         if path_only == "/api/orchestrator/process":
@@ -6277,15 +6646,18 @@ class QuoteHandler(BaseHTTPRequestHandler):
             f"sheets={sheet_row_counts} scan={scan_summary}"
         )
 
-    def read_json(self) -> dict:
+    def read_json_value(self) -> object:
         length = int(self.headers.get("Content-Length", "0") or 0)
         if not length:
             return {}
         raw = self.rfile.read(length).decode("utf-8")
         try:
-            data = json.loads(raw)
+            return json.loads(raw)
         except json.JSONDecodeError:
             return {}
+
+    def read_json(self) -> dict:
+        data = self.read_json_value()
         return data if isinstance(data, dict) else {}
 
     def write_json(self, data: dict, status: int = 200) -> None:

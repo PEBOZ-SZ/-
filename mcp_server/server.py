@@ -9,6 +9,11 @@ from mcp_server.tools.quote_explain import quote_explain
 from mcp_server.tools.quote_patch_preview import quote_patch_preview
 from mcp_server.tools.quote_save import quote_save
 from mcp_server.tools.quote_export import quote_export
+from mcp_server.tools.quote_export_pdf import quote_export_pdf
+from mcp_server.tools.quote_approval_status import quote_approval_status
+from mcp_server.tools.quote_get_history import quote_get_history
+from mcp_server.tools.quote_get_detail import quote_get_detail
+from mcp_server.tools.quote_sheet_preview import quote_sheet_preview
 from mcp_server.tools.quote_admin import quote_admin
 from agent_router import run_agent
 from gpt_tool_router import run_gpt_tool_agent
@@ -149,6 +154,19 @@ def _quote_save_sample(role: str = "sales", query: dict | None = None) -> dict:
                 "total_price": 88.9,
             },
         },
+    }
+
+
+def _quote_get_history_sample(role: str = "admin", query: dict | None = None) -> dict:
+    return {
+        "user_context": {
+            "user_id": "admin_001" if role != "sales" else "sales_001",
+            "user_name": "管理员" if role != "sales" else "张三",
+            "role": role,
+            "session_id": "sess_001",
+            "sales_user_id": "sales_001" if role == "sales" else "",
+        },
+        "query": query if query is not None else {"limit": 5, "offset": 0},
     }
 
 
@@ -446,7 +464,34 @@ def main() -> None:
             _quote_save_sample(role="sales"),
             True,
         ),
+        _run_case(
+            "quote_get_history",
+            quote_get_history,
+            _quote_get_history_sample(role="admin"),
+            True,
+        ),
+        _run_case(
+            "quote_sheet_preview missing quote id",
+            quote_sheet_preview,
+            {"user_context": {"role": "admin"}, "query": {}},
+            False,
+            "quote_uid",
+        ),
         _run_quote_export_case(),
+        _run_case(
+            "quote_export_pdf missing quote id",
+            quote_export_pdf,
+            {"user_context": {"role": "admin"}, "query": {}},
+            False,
+            "quote_uid",
+        ),
+        _run_case(
+            "quote_approval_status missing quote id",
+            quote_approval_status,
+            {"user_context": {"role": "admin"}, "query": {}},
+            False,
+            "quote_uid",
+        ),
         _run_quote_admin_case(),
         _run_agent_router_case(),
         _run_gpt_tool_router_case(),

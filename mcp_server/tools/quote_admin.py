@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import quote_upload_storage
 from mcp_server.audit import write_audit_log
 from mcp_server.auth import require_tool_permission
 from mcp_server.sanitizer import sanitize_quote_admin_result
@@ -52,7 +53,7 @@ def _find_record(records: list[dict[str, Any]], quote_id: str) -> tuple[int, dic
     raise FileNotFoundError(f"quote_id 不存在：{quote_id}")
 
 
-def _quote_summary(record: dict[str, Any]) -> dict[str, Any]:
+def _quote_summary_from_record(record: dict[str, Any]) -> dict[str, Any]:
     quote = record.get("quote_result") if isinstance(record.get("quote_result"), dict) else {}
     return {
         "product_name": str(quote.get("product_name") or ""),
@@ -103,7 +104,7 @@ def _transition_quote_legacy(action: str, quote_id: str) -> dict[str, Any]:
             "status": str(updated.get("status") or "saved"),
             "updated_at": updated_at,
             "frozen": bool(updated.get("frozen")),
-            "quote_summary": _quote_summary(updated),
+            "quote_summary": _quote_summary_from_record(updated),
         }
     else:
         raise ValueError("不支持的 quote action。")
@@ -159,7 +160,7 @@ def _transition_quote(action: str, quote_id: str) -> dict[str, Any]:
             "status": status,
             "updated_at": updated_at,
             "frozen": bool(updated.get("frozen")),
-            "quote_summary": _quote_summary(updated),
+            "quote_summary": _quote_summary_from_record(updated),
         }
     else:
         raise ValueError("不支持的 quote action。")
@@ -196,10 +197,116 @@ def _update_price_rule(user_context: dict[str, Any], payload: dict[str, Any]) ->
     }
 
 
+def _resolve_detail(query: dict[str, Any]) -> dict[str, Any]:
+    detail = quote_upload_storage.load_quote_detail_for_mcp(
+        quote_uid=query.get("quote_uid") or "",
+        calc_quote_id=query.get("calc_quote_id") or "",
+        version_id=query.get("version_id") or "",
+        version_no=query.get("version_no"),
+        include_quote_json=True,
+        include_files=False,
+        include_chat_messages=False,
+    )
+    if not detail:
+        raise ValueError("报价不存在。")
+    return detail
+
+
+def _quote_summary(detail: dict[str, Any]) -> dict[str, Any]:
+    quote = detail.get("quote_result") if isinstance(detail.get("quote_result"), dict) else {}
+    tiers = quote.get("tiers") if isinstance(quote.get("tiers"), list) else []
+    return {
+        "product_name": str(detail.get("product_name") or quote.get("product_name") or ""),
+        "tier_count": len(tiers),
+        "material_total": quote.get("material_total"),
+        "total_price": quote.get("total_price"),
+    }
+
+
+def _reviewer_name(user_context: dict[str, Any], payload: dict[str, Any]) -> str:
+    for key in ("reviewer_name", "approved_by"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return str(user_context.get("user_name") or user_context.get("user_id") or "").strip()
+
+
+def _transition_saved_quote(
+    user_context: dict[str, Any],
+    action: str,
+    query: dict[str, Any],
+) -> dict[str, Any]:
+    if action in {"freeze_quote", "unfreeze_quote", "mark_exported"}:
+        raise ValueError("该 quote_admin action 尚未接入正式报价库审批流程。")
+
+    detail = _resolve_detail(query)
+    payload = query.get("payload") if isinstance(query.get("payload"), dict) else {}
+    quote_uid = str(detail.get("quote_uid") or "").strip()
+    version_no = query.get("version_no")
+    if version_no is None:
+        version_no = detail.get("version_no")
+    note = str(payload.get("approval_note") or payload.get("note") or payload.get("reason") or "").strip()
+    reviewer = _reviewer_name(user_context, payload)
+
+    if action == "view_quote":
+        return {
+            "action": action,
+            "quote_uid": quote_uid,
+            "quote_id": str(detail.get("calc_quote_id") or ""),
+            "calc_quote_id": str(detail.get("calc_quote_id") or ""),
+            "version_id": detail.get("version_id"),
+            "version_no": detail.get("version_no"),
+            "status": str(detail.get("approval_status") or "pending").strip().lower() or "pending",
+            "approval_status": str(detail.get("approval_status") or "pending").strip().lower() or "pending",
+            "approval_note": str(detail.get("approval_note") or ""),
+            "updated_at": str(
+                (detail.get("admin_feedback") if isinstance(detail.get("admin_feedback"), dict) else {}).get(
+                    "approved_at"
+                )
+                or ""
+            ),
+            "quote_summary": _quote_summary(detail),
+        }
+    if action == "approve_quote":
+        updated = quote_upload_storage.approve_saved_quote(
+            quote_uid,
+            version_no=version_no,
+            approved_by=reviewer,
+            approval_note=note,
+        )
+    elif action == "reject_quote":
+        updated = quote_upload_storage.update_saved_quote_approval(
+            quote_uid,
+            approval_status="rejected",
+            approval_note=note,
+            version_no=version_no,
+            reviewed_by=reviewer,
+        )
+    else:
+        raise ValueError("不支持的 quote action。")
+
+    return {
+        "action": action,
+        "quote_uid": quote_uid,
+        "quote_id": str(detail.get("calc_quote_id") or updated.get("approved_calc_quote_id") or ""),
+        "calc_quote_id": str(detail.get("calc_quote_id") or updated.get("approved_calc_quote_id") or ""),
+        "version_id": detail.get("version_id"),
+        "version_no": version_no,
+        "status": str(updated.get("approval_status") or "").strip().lower(),
+        "approval_status": str(updated.get("approval_status") or "").strip().lower(),
+        "approval_note": str(updated.get("approval_note") or ""),
+        "updated_at": str(updated.get("approved_at") or ""),
+        "quote_summary": _quote_summary(detail),
+    }
+
+
 def _audit_record(
     user_context: dict[str, Any],
     action: str,
     quote_id: str,
+    quote_uid: str = "",
+    calc_quote_id: str = "",
+    version_no: int | None = None,
     status: str = "",
     success: bool = False,
     error: str | None = None,
@@ -211,6 +318,9 @@ def _audit_record(
         "session_id": user_context.get("session_id"),
         "action": action,
         "quote_id": quote_id,
+        "quote_uid": quote_uid,
+        "calc_quote_id": calc_quote_id or quote_id,
+        "version_no": version_no,
         "status": status,
         "success": success,
         "error": error,
@@ -227,22 +337,26 @@ def quote_admin(input_data: dict) -> dict:
     )
     action = ""
     quote_id = ""
+    query: dict[str, Any] = {}
     try:
         user_context, query = validate_quote_admin_input(input_data)
         action = query["action"]
-        quote_id = query["quote_id"]
+        quote_id = query["calc_quote_id"] or query["quote_id"] or query["quote_uid"]
         role = str(user_context.get("role") or "guest")
         require_tool_permission(user_context, TOOL_NAME, action=action)
 
         if action == "update_price_rule":
             result = _update_price_rule(user_context, query.get("payload") or {})
         else:
-            result = _transition_quote(action, quote_id)
+            result = _transition_saved_quote(user_context, action, query)
         write_audit_log(
             _audit_record(
                 user_context,
                 action,
-                quote_id,
+                str(result.get("quote_id") or quote_id),
+                quote_uid=str(result.get("quote_uid") or query.get("quote_uid") or ""),
+                calc_quote_id=str(result.get("calc_quote_id") or query.get("calc_quote_id") or ""),
+                version_no=result.get("version_no") if isinstance(result.get("version_no"), int) else None,
                 status=str(result.get("status") or ""),
                 success=True,
             )
@@ -255,7 +369,18 @@ def quote_admin(input_data: dict) -> dict:
     except Exception as exc:  # noqa: BLE001
         error = str(exc)
         try:
-            write_audit_log(_audit_record(user_context, action, quote_id, success=False, error=error))
+            write_audit_log(
+                _audit_record(
+                    user_context,
+                    action,
+                    quote_id,
+                    quote_uid=str(query.get("quote_uid") or ""),
+                    calc_quote_id=str(query.get("calc_quote_id") or ""),
+                    version_no=query.get("version_no") if isinstance(query.get("version_no"), int) else None,
+                    success=False,
+                    error=error,
+                )
+            )
         except Exception:
             pass
         return _failure(error)

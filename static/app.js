@@ -972,6 +972,256 @@ function buildQuoteRequestPayload(prompt, attSnap, extra = {}) {
   return appendSalesIdentityFields(payload);
 }
 
+function hasQuoteDraftAgentContext() {
+  return Boolean(state.sessionContext?.quoteData || state.pendingStructureConfirm);
+}
+
+function looksLikeQuoteDraftAgentIntent(text) {
+  const compact = String(text || "").replace(/\s+/g, "");
+  if (!compact) {
+    return false;
+  }
+  return /(数量|件|两档|毛利|毛利率|个点|加工费|按|单价|元|用量|平方|加入正式BOM|参与报价|不参与报价|含税|不含税|FOB|EXW|删除|重新计算|重算|确认保存|保存提交审批)/i.test(
+    compact,
+  );
+}
+
+function shouldUseQuoteDraftAgent(prompt, attSnap) {
+  return Boolean(
+    Array.isArray(attSnap) &&
+      attSnap.length === 0 &&
+      hasQuoteDraftAgentContext() &&
+      looksLikeQuoteDraftAgentIntent(prompt),
+  );
+}
+
+function buildQuoteDraftAgentPayload() {
+  const pending = state.pendingStructureConfirm;
+  if (pending) {
+    try {
+      syncPendingStructureRowsToData(pending);
+    } catch {
+      // Best-effort context sync; agent still receives the current pending data below.
+    }
+    const payload = {
+      workflow_state: state.workflowState || "STRUCTURE_CONFIRM",
+      file_name: pending.fileName || state.sessionContext?.fileName || "",
+      prompt: pending.prompt || "",
+      quote_confirmation: pending.quoteConfirmation || pending.data?.quote_confirmation || null,
+      structure_confirmation: pending.data || null,
+      session_context: buildSessionContext(),
+    };
+    try {
+      const items = buildStructureConfirmationItemsForQuote(pending);
+      if (Array.isArray(items) && items.length > 0) {
+        payload.items = items.filter((row) => row && row.deleted !== true);
+        payload.structure_confirmation_items = items;
+      }
+    } catch {
+      // Keep the request usable even if the structure table is mid-edit.
+    }
+    return payload;
+  }
+  return {
+    workflow_state: state.workflowState || "CALCULATED",
+    file_name: state.sessionContext?.fileName || "",
+    quote_result: state.sessionContext?.quoteData || null,
+    session_context: buildSessionContext(),
+  };
+}
+
+function currentQuoteDraftAgentQuoteResult() {
+  if (state.sessionContext?.quoteData) {
+    return state.sessionContext.quoteData;
+  }
+  const pending = state.pendingStructureConfirm;
+  if (pending?.data?.quote_result && typeof pending.data.quote_result === "object") {
+    return pending.data.quote_result;
+  }
+  return {};
+}
+
+function buildQuoteDraftAgentRequest(message) {
+  const sessionContext = buildSessionContext();
+  const currentQuoteId = String(state.sessionContext?.currentQuoteId || sessionContext.currentQuoteId || "").trim();
+  const sessionId =
+    String(sessionContext.sessionId || "").trim() ||
+    currentQuoteId ||
+    String(sessionContext.threadId || "").trim() ||
+    getWorkbenchThreadId();
+  const localIdentity = readLocalSalesIdentity() || {};
+  return {
+    session_id: sessionId,
+    message,
+    quote_result: currentQuoteDraftAgentQuoteResult(),
+    payload: buildQuoteDraftAgentPayload(),
+    user_context: {
+      user_id: localIdentity.sales_user_id || "",
+      user_name: localIdentity.sales_user_name || localIdentity.sales_user_label || "",
+      sales_user_id: localIdentity.sales_user_id || "",
+      sales_user_name: localIdentity.sales_user_name || localIdentity.sales_user_label || "",
+      role: "sales",
+    },
+  };
+}
+
+function agentAssistantMessage(result) {
+  return String(
+    result?.assistant_message ||
+      result?.message ||
+      result?.error ||
+      "报价草稿已处理。",
+  ).trim();
+}
+
+function formatQuoteDraftAgentMissingConfirmations(result) {
+  const items = [
+    ...(Array.isArray(result?.missing_fields) ? result.missing_fields : []),
+    ...(Array.isArray(result?.risk_flags) ? result.risk_flags : []),
+  ]
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
+  if (!items.length) {
+    return "";
+  }
+  return `还需确认：${items.join("、")}`;
+}
+
+function quoteDraftAgentResultQuote(result) {
+  const quote = result?.quote_result;
+  return quote && typeof quote === "object" && Object.keys(quote).length > 0 ? quote : null;
+}
+
+function syncQuoteDraftIntoPending(result) {
+  if (state.pendingStructureConfirm && result?.draft && typeof result.draft === "object") {
+    state.pendingStructureConfirm.quoteDraft = result.draft;
+  }
+}
+
+function handleQuoteDraftAgentResult(result, loadingToken, fileName) {
+  const agentType = String(result?.type || "").trim();
+  const message = agentAssistantMessage(result);
+  syncQuoteDraftIntoPending(result);
+
+  if (agentType === "quote_updated") {
+    const quoteResult = quoteDraftAgentResultQuote(result);
+    if (quoteResult) {
+      const primaryMsgId = newQuoteMsgId();
+      replaceLoadingByToken(loadingToken, {
+        role: "assistant",
+        type: "text",
+        text: message,
+      });
+      state.messages.push({
+        role: "assistant",
+        type: "quote_card",
+        subtype: "primary",
+        fileName: fileName || state.sessionContext?.fileName || "",
+        data: quoteResult,
+        msgId: primaryMsgId,
+        time: formatNowTime(),
+      });
+      state.sessionContext = {
+        ...state.sessionContext,
+        currentQuoteId: quoteResult.quote_id || state.sessionContext?.currentQuoteId || "",
+        fileName: fileName || state.sessionContext?.fileName || "",
+        quoteData: quoteResult,
+        primaryQuoteMsgId: primaryMsgId,
+      };
+      setWorkflowState("CALCULATED");
+      syncPricingGateSnapshotFromQuote(quoteResult);
+      state.myQuotesNeedsRefresh = true;
+      void refreshMyQuotesPreview();
+      renderMessages();
+      syncComposerPlaceholder();
+      scrollToBottom();
+    } else {
+      replaceLoadingByToken(loadingToken, {
+        role: "assistant",
+        type: "text",
+        text: message,
+      });
+    }
+    setComposerStatusLine("报价草稿已更新并重新计算", "ok");
+    return;
+  }
+
+  if (agentType === "clarify") {
+    const missing = formatQuoteDraftAgentMissingConfirmations({
+      missing_fields: result?.missing_fields,
+      risk_flags: result?.risk_flags,
+    });
+    replaceLoadingByToken(loadingToken, {
+      role: "assistant",
+      type: "text",
+      text: missing ? `${message}\n${missing}` : message,
+    });
+    setComposerStatusLine("还需要补充确认信息", "warn");
+    return;
+  }
+
+  if (agentType === "saved") {
+    const quoteResult = quoteDraftAgentResultQuote(result);
+    if (quoteResult) {
+      const updatedQuote = { ...quoteResult, approval_status: "pending" };
+      state.sessionContext = {
+        ...state.sessionContext,
+        currentQuoteId: updatedQuote.quote_id || state.sessionContext?.currentQuoteId || "",
+        quoteData: updatedQuote,
+      };
+      const msg = findQuoteMessageByMsgId(state.sessionContext?.primaryQuoteMsgId || "");
+      if (msg?.data) {
+        msg.data = { ...msg.data, ...updatedQuote, approval_status: "pending" };
+      }
+    }
+    replaceLoadingByToken(loadingToken, {
+      role: "assistant",
+      type: "text",
+      text: "已保存并提交审批，当前状态：待管理员审批",
+    });
+    setWorkflowState("SAVED");
+    state.myQuotesNeedsRefresh = true;
+    void refreshMyQuotesPreview();
+    return;
+  }
+
+  if (agentType === "error") {
+    replaceLoadingByToken(loadingToken, {
+      role: "assistant",
+      type: "text",
+      text: message || "报价草稿处理失败，请稍后重试。",
+    });
+    setComposerStatusLine("报价草稿处理失败", "err");
+    return;
+  }
+
+  replaceLoadingByToken(loadingToken, {
+    role: "assistant",
+    type: "text",
+    text: message || "请再具体说明要修改的报价字段。",
+  });
+  setComposerStatusLine("还需要补充确认信息", "warn");
+}
+
+async function sendQuoteDraftAgentMessage(prompt, loadingToken, fileName) {
+  try {
+    const response = await quoteFetchWithTimeout("/api/quote/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildQuoteDraftAgentRequest(prompt)),
+    });
+    const result = await readResponseJson(response);
+    if (!response.ok) {
+      throw new Error(result.message || result.error || `请求失败（HTTP ${response.status}）`);
+    }
+    handleQuoteDraftAgentResult(result, loadingToken, fileName);
+    return true;
+  } catch (error) {
+    setComposerStatusLine("草稿修改未完成，正在改用原报价流程重试…", "warn");
+    return false;
+  }
+}
+
 async function requestQuote(options = {}) {
   const { allowEmpty = false, skipUserEcho = false } = options;
   if (state.isRequesting) {
@@ -1050,6 +1300,12 @@ async function requestQuote(options = {}) {
   setComposerStatusLine("正在提交本轮消息（文字 + 附件）…", "busy");
 
   try {
+    if (shouldUseQuoteDraftAgent(prompt, attSnap)) {
+      const handledByAgent = await sendQuoteDraftAgentMessage(prompt, loadingToken, quoteFileLabel);
+      if (handledByAgent) {
+        return;
+      }
+    }
     const payload = buildQuoteRequestPayload(prompt, attSnap);
     const post = await postQuoteWithSalesIdentityRetry(payload, loadingToken, loadingText);
     if (post.cancelled) {
@@ -8478,6 +8734,25 @@ async function openQuoteSheetFromRecord(seriesUid, options = {}) {
   return false;
 }
 
+function openInitialQuoteSheetDeepLink() {
+  let params;
+  try {
+    params = new URLSearchParams(window.location.search || "");
+  } catch {
+    return;
+  }
+  const view = String(params.get("view") || "").trim();
+  const uid = String(params.get("quote_uid") || "").trim();
+  if (view !== "quoteSheet") {
+    return;
+  }
+  if (!uid) {
+    switchWorkspaceView("quoteSheet");
+    return;
+  }
+  void openQuoteSheetFromRecord(uid, { source: "record" });
+}
+
 async function restoreMyQuoteSession(seriesUid, options = {}) {
   const uid = String(seriesUid || "").trim();
   if (!uid) return;
@@ -9022,3 +9297,6 @@ async function fetchLlmStatusOnly() {
 }
 
 initialize();
+window.addEventListener("load", () => {
+  window.setTimeout(openInitialQuoteSheetDeepLink, 0);
+});

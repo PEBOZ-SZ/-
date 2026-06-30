@@ -103,9 +103,13 @@ def _is_openai_config(config: Any = None, *, api_key_source: str = "") -> bool:
 
 
 def _resolve_provider_name(config: KimiConfig) -> str:
+    if config.api_key_source in {"MOONSHOT_API_KEY", "KIMI_API_KEY"}:
+        return "moonshot"
     bu = str(config.base_url or "").lower()
     if "api.openai.com" in bu:
         return "openai"
+    if "moonshot" in bu:
+        return "moonshot"
     return "openai-compatible"
 
 
@@ -137,6 +141,9 @@ def _openai_model_error_hint(error_code: str) -> str:
 
 
 def _resolve_base_url_for_source(api_key_source: str) -> str:
+    source = str(api_key_source or "").strip()
+    if source in {"MOONSHOT_API_KEY", "KIMI_API_KEY"}:
+        return (os.getenv("MOONSHOT_BASE_URL") or os.getenv("KIMI_BASE_URL") or DEFAULT_BASE_URL).strip()
     return (os.getenv("OPENAI_BASE_URL") or DEFAULT_OPENAI_BASE_URL).strip()
 
 
@@ -257,9 +264,18 @@ class KimiConfig:
 
 
 def get_kimi_config() -> KimiConfig:
-    api_key, api_key_source = first_non_empty_env("OPENAI_API_KEY")
+    provider = str(os.getenv("LLM_PROVIDER") or "").strip().lower()
+    if provider in {"moonshot", "kimi"}:
+        api_key, api_key_source = first_non_empty_env("MOONSHOT_API_KEY", "KIMI_API_KEY")
+    elif provider in {"openai", "openai_compatible", "openai-compatible"}:
+        api_key, api_key_source = first_non_empty_env("OPENAI_API_KEY")
+    else:
+        api_key, api_key_source = first_non_empty_env("OPENAI_API_KEY", "MOONSHOT_API_KEY", "KIMI_API_KEY")
     base_url = normalize_base_url(_resolve_base_url_for_source(api_key_source))
-    model = (os.getenv("OPENAI_MODEL") or DEFAULT_OPENAI_MODEL).strip()
+    if api_key_source in {"MOONSHOT_API_KEY", "KIMI_API_KEY"}:
+        model = (os.getenv("KIMI_MODEL") or DEFAULT_MODEL).strip()
+    else:
+        model = (os.getenv("OPENAI_MODEL") or DEFAULT_OPENAI_MODEL).strip()
     timeout_s = _parse_timeout(os.getenv("KIMI_TIMEOUT_SECONDS"), 25)
     temperature = _parse_temperature(os.getenv("KIMI_TEMPERATURE"), 1.0)
     return KimiConfig(

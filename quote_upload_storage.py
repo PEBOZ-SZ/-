@@ -2768,6 +2768,279 @@ def _resolve_quote_uid_for_public_lookup(conn: sqlite3.Connection, lookup_id: st
     return None
 
 
+def list_quote_history_for_mcp(
+    *,
+    role: str,
+    sales_user_id: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+    keyword: str | None = None,
+    approval_status: str | None = None,
+    include_hidden: bool = False,
+) -> tuple[list[dict[str, Any]], int]:
+    """MCP readonly history list backed by original quote history tables."""
+    ensure_quote_db_backend_supported()
+    if configured_quote_db_backend() == "postgres":
+        from quote_storage import postgres_impl
+
+        if hasattr(postgres_impl, "list_quote_history_for_mcp"):
+            return postgres_impl.list_quote_history_for_mcp(
+                role=role,
+                sales_user_id=sales_user_id,
+                limit=limit,
+                offset=offset,
+                keyword=keyword,
+                approval_status=approval_status,
+                include_hidden=include_hidden,
+            )
+        return [], 0
+
+    init_quote_storage()
+    role_norm = str(role or "").strip()
+    sid = str(sales_user_id or "").strip()
+    lim = max(1, min(int(limit), 100))
+    off = max(0, int(offset))
+    conds: list[str] = ["1 = 1"]
+    params: list[Any] = []
+
+    if role_norm == "sales":
+        conds.append("sales_user_id = ?")
+        params.append(sid)
+        if not include_hidden:
+            conds.append(_sales_quote_visible_sql())
+    elif sid:
+        conds.append("sales_user_id = ?")
+        params.append(sid)
+
+    kw = str(keyword or "").strip()
+    if kw:
+        term = f"%{kw}%"
+        conds.append(
+            """(
+                quote_uid LIKE ?
+                OR IFNULL(product_name, '') LIKE ?
+                OR IFNULL(latest_calc_quote_id, '') LIKE ?
+                OR EXISTS (
+                    SELECT 1 FROM quote_versions qv
+                    WHERE qv.quote_uid = quotes.quote_uid
+                      AND qv.calc_quote_id LIKE ?
+                )
+            )"""
+        )
+        params.extend([term, term, term, term])
+
+    approval = str(approval_status or "").strip().lower()
+    if approval in {"pending", "approved", "rejected"}:
+        conds.append("approval_status = ?")
+        params.append(approval)
+
+    where_sql = " AND ".join(conds)
+    with _DB_LOCK:
+        conn = _connect()
+        conn.row_factory = sqlite3.Row
+        try:
+            total_row = conn.execute(
+                f"SELECT COUNT(*) FROM quotes WHERE {where_sql}",
+                tuple(params),
+            ).fetchone()
+            total = int(total_row[0]) if total_row else 0
+            rows = conn.execute(
+                f"""
+                SELECT quote_uid, latest_calc_quote_id, product_name,
+                       latest_version_no, latest_saved_at, approval_status,
+                       approval_note, sales_user_id, sales_user_name,
+                       material_total, tier1_cost_before_margin,
+                       admin_update_status, admin_update_at
+                FROM quotes
+                WHERE {where_sql}
+                ORDER BY latest_saved_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (*params, lim, off),
+            ).fetchall()
+        finally:
+            conn.close()
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        rd = dict(row)
+        update_status = str(rd.get("admin_update_status") or "").strip().lower()
+        items.append(
+            {
+                "quote_uid": rd.get("quote_uid") or "",
+                "latest_calc_quote_id": rd.get("latest_calc_quote_id") or "",
+                "product_name": rd.get("product_name") or "",
+                "latest_version_no": rd.get("latest_version_no"),
+                "latest_saved_at": rd.get("latest_saved_at") or "",
+                "approval_status": rd.get("approval_status") or "pending",
+                "sales_user_id": rd.get("sales_user_id") or "",
+                "sales_user_name": rd.get("sales_user_name") or "",
+                "material_total": rd.get("material_total"),
+                "tier1_cost_before_margin": rd.get("tier1_cost_before_margin"),
+                "has_admin_update": update_status == ADMIN_UPDATE_STATUS_PENDING,
+                "admin_update_status": update_status,
+            }
+        )
+    return items, total
+
+
+def load_quote_detail_for_mcp(
+    *,
+    quote_uid: str | None = None,
+    calc_quote_id: str | None = None,
+    version_id: str | None = None,
+    version_no: int | None = None,
+    include_quote_json: bool = True,
+    include_files: bool = True,
+    include_chat_messages: bool = False,
+) -> dict[str, Any] | None:
+    """MCP readonly detail object backed by original quote history tables."""
+    ensure_quote_db_backend_supported()
+    if configured_quote_db_backend() == "postgres":
+        from quote_storage import postgres_impl
+
+        if hasattr(postgres_impl, "load_quote_detail_for_mcp"):
+            return postgres_impl.load_quote_detail_for_mcp(
+                quote_uid=quote_uid,
+                calc_quote_id=calc_quote_id,
+                version_id=version_id,
+                version_no=version_no,
+                include_quote_json=include_quote_json,
+                include_files=include_files,
+                include_chat_messages=include_chat_messages,
+            )
+        return None
+
+    init_quote_storage()
+    q_uid = str(quote_uid or "").strip()
+    calc_id = str(calc_quote_id or "").strip()
+    ver_id = str(version_id or "").strip()
+    with _DB_LOCK:
+        conn = _connect()
+        conn.row_factory = sqlite3.Row
+        try:
+            if ver_id:
+                version_row = conn.execute(
+                    "SELECT * FROM quote_versions WHERE id = ? LIMIT 1",
+                    (ver_id,),
+                ).fetchone()
+                version = _quote_version_row_to_dict(version_row)
+                if not version:
+                    return None
+                q_uid = str(version.get("quote_uid") or "").strip()
+            else:
+                version = None
+
+            if not q_uid and calc_id:
+                q_uid = _resolve_quote_uid_for_public_lookup(conn, calc_id) or ""
+            if not q_uid:
+                return None
+            meta_row = conn.execute(
+                """
+                SELECT quote_uid, product_name, latest_version_no, latest_calc_quote_id,
+                       approval_status, approval_note, approved_by, approved_at,
+                       sales_user_id, sales_user_name, admin_update_status,
+                       admin_update_at, admin_update_viewed_at, admin_update_handled_at
+                FROM quotes
+                WHERE quote_uid = ?
+                LIMIT 1
+                """,
+                (q_uid,),
+            ).fetchone()
+            if not meta_row:
+                return None
+
+            if version is not None:
+                pass
+            elif calc_id:
+                version_row = conn.execute(
+                    "SELECT * FROM quote_versions WHERE quote_uid = ? AND calc_quote_id = ? LIMIT 1",
+                    (q_uid, calc_id),
+                ).fetchone()
+            elif version_no is not None:
+                version_row = conn.execute(
+                    "SELECT * FROM quote_versions WHERE quote_uid = ? AND version_no = ? LIMIT 1",
+                    (q_uid, int(version_no)),
+                ).fetchone()
+            else:
+                version_row = conn.execute(
+                    """
+                    SELECT * FROM quote_versions
+                    WHERE quote_uid = ?
+                    ORDER BY version_no DESC
+                    LIMIT 1
+                    """,
+                    (q_uid,),
+                ).fetchone()
+            if version is None:
+                version = _quote_version_row_to_dict(version_row)
+            if not version:
+                return None
+            ver_no = int(version.get("version_no") or 0)
+            detail_rows = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT line_no, name, spec, usage, unit_price, amount,
+                           amount_text, source, calc_note, kb_hit
+                    FROM quote_items
+                    WHERE quote_uid = ? AND version_no = ?
+                    ORDER BY line_no ASC
+                    """,
+                    (q_uid, ver_no),
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+
+    meta = dict(meta_row)
+    raw_quote: dict[str, Any] = {}
+    if include_quote_json:
+        try:
+            loaded = json.loads(str(version.get("quote_json") or "{}"))
+            raw_quote = loaded if isinstance(loaded, dict) else {}
+        except json.JSONDecodeError:
+            raw_quote = {}
+    files = list_quote_files_for_quote(q_uid) if include_files else []
+    if include_files and ver_no:
+        files = [
+            file_info
+            for file_info in files
+            if int(file_info.get("version_no") or 0) == ver_no
+            or str(file_info.get("calc_quote_id") or "") == str(version.get("calc_quote_id") or "")
+        ]
+    chat_messages = list_quote_chat_messages(q_uid, limit=50) if include_chat_messages else []
+    update_status = str(meta.get("admin_update_status") or "").strip().lower()
+    return {
+        "quote_uid": q_uid,
+        "version_id": version.get("id"),
+        "calc_quote_id": version.get("calc_quote_id") or "",
+        "version_no": ver_no,
+        "product_name": raw_quote.get("product_name") or meta.get("product_name") or "",
+        "approval_status": meta.get("approval_status") or "pending",
+        "approval_note": meta.get("approval_note") or "",
+        "validation_status": version.get("validation_status") or "",
+        "quote_mode": version.get("quote_mode") or "",
+        "structured_input": version.get("structured_input") if isinstance(version.get("structured_input"), dict) else {},
+        "source_summary": version.get("source_summary") if isinstance(version.get("source_summary"), dict) else {},
+        "sales_user_id": meta.get("sales_user_id") or "",
+        "sales_user_name": meta.get("sales_user_name") or "",
+        "quote_result": raw_quote,
+        "detail_rows": detail_rows,
+        "files": files,
+        "admin_feedback": {
+            "has_admin_update": update_status == ADMIN_UPDATE_STATUS_PENDING,
+            "admin_update_status": update_status,
+            "admin_update_at": meta.get("admin_update_at") or "",
+            "admin_update_viewed_at": meta.get("admin_update_viewed_at") or "",
+            "admin_update_handled_at": meta.get("admin_update_handled_at") or "",
+            "approved_by": meta.get("approved_by") or "",
+            "approved_at": meta.get("approved_at") or "",
+        },
+        "chat_messages": chat_messages,
+    }
+
+
 def get_saved_quote_approval_public(lookup_id: str) -> dict[str, str]:
     """前台只读：按归档 quote_uid 或 calc_quote_id 查询审批核实结果。"""
     from quote_approval import public_approval_snapshot

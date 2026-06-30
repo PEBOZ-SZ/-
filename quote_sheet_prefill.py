@@ -20,6 +20,7 @@ from sales_rep_fields import extract_sales_fields, pick_section_value
 from quote_upload_storage import (
     categorize_quote_files,
     get_my_quote_session_detail,
+    load_quote_detail_for_mcp,
     list_quote_files_for_quote,
     resolve_stored_file_path,
     sales_user_can_access_quote,
@@ -1107,6 +1108,32 @@ def build_quote_sheet_prefill_payload(
         "include_fob": quote.get("include_fob"),
         "price_type": _first_str(quote.get("price_type"), product_obj.get("price_type")),
     }
+
+
+def build_quote_sheet_prefill_payload_for_mcp(
+    quote_series_uid: str,
+    *,
+    sales_user_id: str | None = None,
+    allow_admin: bool = False,
+    source: str = "record",
+) -> dict[str, Any] | None:
+    """Readonly MCP wrapper around the existing quote-sheet prefill builder."""
+    uid = str(quote_series_uid or "").strip()
+    sid = str(sales_user_id or "").strip()
+    if not uid:
+        return None
+    if sid and sales_user_can_access_quote(uid, sid):
+        return build_quote_sheet_prefill_payload(uid, sid, source=source)
+    if not allow_admin:
+        return None
+
+    detail = load_quote_detail_for_mcp(quote_uid=uid, include_files=False)
+    if not isinstance(detail, dict):
+        return None
+    owner_sid = str(detail.get("sales_user_id") or "").strip()
+    if not owner_sid:
+        return None
+    return build_quote_sheet_prefill_payload(uid, owner_sid, source=source)
 
 
 def map_quote_record_to_quotation_form(record: dict[str, Any]) -> dict[str, Any]:
