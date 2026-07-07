@@ -76,6 +76,9 @@ server_*.log
 # Local generated/runtime data
 data/
 quote_storage/
+!quote_storage/
+!quote_storage/*.py
+quote_storage/__pycache__/
 
 # Editor / OS
 .idea/

@@ -1,9 +1,69 @@
 from __future__ import annotations
 
 import os
+import importlib.util
+import sys
+import types
+from pathlib import Path
 from typing import Any, Callable
 
-from mcp_server.codex_mcp import FastMCP
+
+def _patch_pydantic_settings_for_local_sdk() -> None:
+    """Work around local pydantic-settings wheels with missing private exports."""
+    package_dir = Path(sys.prefix) / "Lib" / "site-packages" / "pydantic_settings"
+    if not package_dir.exists():
+        return
+    package = types.ModuleType("pydantic_settings")
+    package.__file__ = str(package_dir / "__init__.py")
+    package.__path__ = [str(package_dir)]
+    sys.modules["pydantic_settings"] = package
+
+    if "pydantic_settings.utils" in sys.modules:
+        module = sys.modules["pydantic_settings.utils"]
+    else:
+        utils_path = package_dir / "utils.py"
+        spec = importlib.util.spec_from_file_location("pydantic_settings.utils", utils_path)
+        if spec is None or spec.loader is None or not utils_path.exists():
+            return
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules["pydantic_settings.utils"] = module
+
+    from pydantic._internal._utils import lenient_issubclass as _lenient_issubclass
+
+    module._lenient_issubclass = getattr(module, "_lenient_issubclass", _lenient_issubclass)
+    module._typing_base = getattr(module, "_typing_base", type(Any))
+    module._WithArgsTypes = getattr(module, "_WithArgsTypes", (type(list[int]),))
+    module.get_args = getattr(module, "get_args", getattr(__import__("typing"), "get_args"))
+    module.get_origin = getattr(module, "get_origin", getattr(__import__("typing"), "get_origin"))
+
+    exceptions_path = package_dir / "exceptions.py"
+    exceptions_spec = importlib.util.spec_from_file_location("pydantic_settings.exceptions", exceptions_path)
+    if exceptions_spec is None or exceptions_spec.loader is None or not exceptions_path.exists():
+        return
+    exceptions_module = importlib.util.module_from_spec(exceptions_spec)
+    exceptions_spec.loader.exec_module(exceptions_module)
+    sys.modules["pydantic_settings.exceptions"] = exceptions_module
+
+    import pydantic_settings.sources as _settings_sources
+
+    _settings_sources.SettingsError = exceptions_module.SettingsError
+
+    main_path = package_dir / "main.py"
+    main_spec = importlib.util.spec_from_file_location("pydantic_settings.main", main_path)
+    if main_spec is None or main_spec.loader is None or not main_path.exists():
+        return
+    main_module = importlib.util.module_from_spec(main_spec)
+    sys.modules["pydantic_settings.main"] = main_module
+    main_spec.loader.exec_module(main_module)
+
+    package.BaseSettings = main_module.BaseSettings
+    package.CliApp = main_module.CliApp
+    package.SettingsConfigDict = main_module.SettingsConfigDict
+
+
+_patch_pydantic_settings_for_local_sdk()
+from mcp.server.fastmcp import FastMCP
 from mcp_server.tools.quote_approval_status import quote_approval_status as _quote_approval_status
 from mcp_server.tools.quote_get_detail import quote_get_detail as _quote_get_detail
 from mcp_server.tools.quote_get_history import quote_get_history as _quote_get_history
