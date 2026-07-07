@@ -68,7 +68,6 @@ from mcp_server.tools.quote_approval_status import quote_approval_status as _quo
 from mcp_server.tools.quote_get_detail import quote_get_detail as _quote_get_detail
 from mcp_server.tools.quote_get_history import quote_get_history as _quote_get_history
 from mcp_server.tools.quote_sheet_preview import quote_sheet_preview as _quote_sheet_preview
-from server import handle_quote_agent_request
 
 
 SERVER_NAME = "peboz-auto-quote-public"
@@ -76,7 +75,6 @@ SERVER_VERSION = "0.1.0"
 
 
 PUBLIC_TOOL_REGISTRY: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
-    "quote_agent": handle_quote_agent_request,
     "quote_history": _quote_get_history,
     "quote_get_detail": _quote_get_detail,
     "quote_sheet_preview": _quote_sheet_preview,
@@ -125,11 +123,6 @@ def _ensure_input(input_data: dict[str, Any] | None) -> dict[str, Any]:
 
 def _call_public_tool(tool_name: str, input_data: dict[str, Any] | None) -> dict[str, Any]:
     return PUBLIC_TOOL_REGISTRY[tool_name](_ensure_input(input_data))
-
-
-@mcp.tool(description="Update, recalculate, clarify, or save a quote draft through the safe quote agent.")
-def quote_agent(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
-    return _call_public_tool("quote_agent", input_data)
 
 
 @mcp.tool(description="List saved quote history through the original quote storage.")
