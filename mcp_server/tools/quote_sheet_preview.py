@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 from urllib.parse import quote
 
@@ -8,7 +9,9 @@ from mcp_server.audit import write_audit_log
 from mcp_server.auth import ROLE_ADMIN, ROLE_SALES, ROLE_SYSTEM_ADMIN, require_tool_permission
 from mcp_server.sanitizer import sanitize_quote_sheet_preview_result
 from mcp_server.schemas import normalize_user_context, validate_quote_sheet_preview_input
+from quote_sheet_direct_prefill import build_direct_quote_sheet_prefill_payload
 from quote_sheet_prefill import build_quote_sheet_prefill_payload_for_mcp
+from quote_sheet_public_store import save_public_quote_sheet_prefill
 
 
 TOOL_NAME = "quote_sheet_preview"
@@ -93,6 +96,81 @@ def _prefill_summary(prefill: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _has_direct_quote_sheet_payload(query: Any) -> bool:
+    if not isinstance(query, dict):
+        return False
+    return any(key in query for key in ("prefill", "quote_sheet", "quote_sheet_rows", "rows", "products", "items"))
+
+
+def _public_base_url() -> str:
+    for key in ("PUBLIC_MCP_BASE_URL", "AUTOQUOTE_PUBLIC_BASE_URL", "RENDER_EXTERNAL_URL"):
+        value = str(os.environ.get(key) or "").strip().rstrip("/")
+        if value:
+            return value
+    hostname = str(os.environ.get("RENDER_EXTERNAL_HOSTNAME") or "").strip().strip("/")
+    if hostname:
+        return f"https://{hostname}"
+    service_name = str(os.environ.get("RENDER_SERVICE_NAME") or "").strip()
+    if service_name:
+        return f"https://{service_name}.onrender.com"
+    return ""
+
+
+def _absolute_or_relative_url(path: str) -> str:
+    base = _public_base_url()
+    return f"{base}{path}" if base else path
+
+
+def _direct_preview(input_data: dict[str, Any]) -> dict[str, Any]:
+    query = input_data.get("query") if isinstance(input_data.get("query"), dict) else {}
+    prefill = build_direct_quote_sheet_prefill_payload(query)
+    token = save_public_quote_sheet_prefill(prefill)
+    quoted_token = quote(token)
+    preview_path = f"/?view=quoteSheet&quote_sheet_token={quoted_token}"
+    download_path = f"{preview_path}&exportMode=pdf_rmb"
+    if str(query.get("export_mode") or query.get("exportMode") or "").strip().lower() == "pdf_fob":
+        download_path = f"{preview_path}&exportMode=pdf_fob"
+    include_prefill = (
+        str(query.get("mode") or "").strip().lower() == "prefill"
+        or _coerce_bool(query.get("include_prefill"), False)
+    )
+    result = {
+        "quote_uid": "",
+        "calc_quote_id": "",
+        "version_id": None,
+        "version_no": None,
+        "product_name": str(prefill.get("product_name") or ""),
+        "approval_status": "not_required",
+        "preview_token": token,
+        "preview_url": _absolute_or_relative_url(preview_path),
+        "download_url": _absolute_or_relative_url(download_path),
+        "prefill_available": True,
+        "prefill_summary": _prefill_summary(prefill),
+    }
+    if include_prefill:
+        result["prefill"] = prefill
+    return {
+        "ok": True,
+        "tool": TOOL_NAME,
+        "result": result,
+    }
+
+
 def quote_sheet_preview(input_data: dict) -> dict:
     user_context = normalize_user_context(
         input_data.get("user_context") if isinstance(input_data, dict) else {}
@@ -100,6 +178,10 @@ def quote_sheet_preview(input_data: dict) -> dict:
     query: dict[str, Any] = {}
     result: dict[str, Any] | None = None
     try:
+        direct_query = input_data.get("query") if isinstance(input_data, dict) else {}
+        if _has_direct_quote_sheet_payload(direct_query):
+            return _direct_preview(input_data)
+
         require_tool_permission(user_context, TOOL_NAME)
         user_context, query = validate_quote_sheet_preview_input(input_data)
 

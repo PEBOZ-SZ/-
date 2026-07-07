@@ -64,14 +64,60 @@ def _patch_pydantic_settings_for_local_sdk() -> None:
 
 _patch_pydantic_settings_for_local_sdk()
 from mcp.server.fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from mcp_server.tools.quote_approval_status import quote_approval_status as _quote_approval_status
 from mcp_server.tools.quote_get_detail import quote_get_detail as _quote_get_detail
 from mcp_server.tools.quote_get_history import quote_get_history as _quote_get_history
 from mcp_server.tools.quote_sheet_preview import quote_sheet_preview as _quote_sheet_preview
+from quote_sheet_public_store import load_public_quote_sheet_prefill
 
 
 SERVER_NAME = "peboz-auto-quote-public"
 SERVER_VERSION = "0.1.0"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+STATIC_DIR = PROJECT_ROOT / "static"
+QUOTE_SHEET_TOKEN_BOOTSTRAP = r"""
+<script>
+(function () {
+  function param(name) {
+    try {
+      return new URLSearchParams(window.location.search || "").get(name) || "";
+    } catch (_) {
+      return "";
+    }
+  }
+  async function openPublicQuoteSheet() {
+    var token = (param("quote_sheet_token") || param("prefill_token") || "").trim();
+    if (!token) return;
+    var bridge = window.QuoteSheetBridge || null;
+    if (!bridge || typeof bridge.applyPrefill !== "function") {
+      window.setTimeout(openPublicQuoteSheet, 120);
+      return;
+    }
+    try {
+      var resp = await window.fetch("/api/public/quote-sheet-prefill/" + encodeURIComponent(token));
+      var payload = await resp.json().catch(function () { return {}; });
+      if (!resp.ok || !payload || payload.ok === false) {
+        throw new Error(payload.message || payload.error || "quote sheet data not found");
+      }
+      bridge.applyPrefill(payload);
+      var exportMode = (param("exportMode") || param("export_mode") || "").trim();
+      if (exportMode === "pdf_rmb" && typeof bridge.exportDirect === "function") {
+        await bridge.exportDirect({ fobUsd: false, skipConfirm: true });
+      } else if (exportMode === "pdf_fob" && typeof bridge.exportDirect === "function") {
+        await bridge.exportDirect({ fobUsd: true, skipConfirm: true });
+      }
+    } catch (err) {
+      window.alert("Load quote sheet failed: " + (err && err.message ? err.message : err));
+    }
+  }
+  window.addEventListener("load", function () {
+    window.setTimeout(openPublicQuoteSheet, 120);
+  });
+})();
+</script>
+"""
 
 
 PUBLIC_TOOL_REGISTRY: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
@@ -123,6 +169,66 @@ def _ensure_input(input_data: dict[str, Any] | None) -> dict[str, Any]:
 
 def _call_public_tool(tool_name: str, input_data: dict[str, Any] | None) -> dict[str, Any]:
     return PUBLIC_TOOL_REGISTRY[tool_name](_ensure_input(input_data))
+
+
+def _load_public_quote_sheet_prefill_for_route(token: str) -> dict[str, Any]:
+    prefill = load_public_quote_sheet_prefill(token)
+    if not isinstance(prefill, dict):
+        return {"ok": False, "error": "not_found", "message": "quote sheet prefill token not found"}
+    return prefill
+
+
+def _static_response(path: Path) -> Response:
+    resolved = path.resolve()
+    static_root = STATIC_DIR.resolve()
+    if resolved != (STATIC_DIR / "index.html").resolve() and static_root not in resolved.parents:
+        return JSONResponse({"ok": False, "error": "invalid_path"}, status_code=403)
+    if not resolved.exists() or not resolved.is_file():
+        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+    return FileResponse(resolved)
+
+
+def _index_response() -> Response:
+    index_path = STATIC_DIR / "index.html"
+    if not index_path.exists() or not index_path.is_file():
+        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+    html = index_path.read_text(encoding="utf-8")
+    if "quote_sheet_token" not in html:
+        html = html.replace("</body>", f"{QUOTE_SHEET_TOKEN_BOOTSTRAP}\n  </body>")
+    return Response(html, media_type="text/html; charset=utf-8")
+
+
+@mcp.custom_route("/", methods=["GET"], include_in_schema=False)
+async def public_index(request: Request) -> Response:
+    del request
+    return _index_response()
+
+
+@mcp.custom_route("/index.html", methods=["GET"], include_in_schema=False)
+async def public_index_html(request: Request) -> Response:
+    del request
+    return _index_response()
+
+
+@mcp.custom_route("/static/{path:path}", methods=["GET"], include_in_schema=False)
+async def public_static(request: Request) -> Response:
+    rel = str(request.path_params.get("path") or "").lstrip("/")
+    return _static_response(STATIC_DIR / rel)
+
+
+@mcp.custom_route("/api/public/quote-sheet-prefill/{token}", methods=["GET"], include_in_schema=False)
+async def public_quote_sheet_prefill(request: Request) -> Response:
+    token = str(request.path_params.get("token") or "").strip()
+    payload = _load_public_quote_sheet_prefill_for_route(token)
+    if not payload.get("ok"):
+        return JSONResponse(payload, status_code=404)
+    return JSONResponse(payload)
+
+
+@mcp.custom_route("/healthz", methods=["GET"], include_in_schema=False)
+async def public_healthz(request: Request) -> Response:
+    del request
+    return PlainTextResponse("ok")
 
 
 @mcp.tool(description="List saved quote history through the original quote storage.")
