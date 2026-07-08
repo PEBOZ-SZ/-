@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -28,8 +30,33 @@ def normalize_company_name(name: Any) -> str:
     return re.sub(r"\s+", "", str(name or "").strip())
 
 
+def _load_env_payload() -> dict[str, Any] | None:
+    raw_b64 = str(os.environ.get("COMPANY_PAYMENT_ACCOUNTS_JSON_B64") or "").strip()
+    raw_json = str(os.environ.get("COMPANY_PAYMENT_ACCOUNTS_JSON") or "").strip()
+    try:
+        if raw_b64:
+            decoded = base64.b64decode(raw_b64).decode("utf-8")
+            data = json.loads(decoded)
+        elif raw_json:
+            data = json.loads(raw_json)
+        else:
+            return None
+    except Exception:
+        return {"version": 1, "source": "env_invalid", "accounts": []}
+    if not isinstance(data, dict):
+        return {"version": 1, "source": "env_invalid", "accounts": []}
+    if not isinstance(data.get("accounts"), list):
+        data["accounts"] = []
+    return data
+
+
 def _load_payload(force: bool = False) -> dict[str, Any]:
     global _CACHE_MTIME, _CACHE_PAYLOAD
+    env_payload = _load_env_payload()
+    if env_payload is not None:
+        _CACHE_MTIME = None
+        _CACHE_PAYLOAD = env_payload
+        return env_payload
     try:
         mtime = _ACCOUNTS_PATH.stat().st_mtime
     except OSError:
