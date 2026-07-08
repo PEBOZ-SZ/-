@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 import quote_upload_storage
 from mcp_server.audit import write_audit_log
-from mcp_server.auth import ROLE_ADMIN, ROLE_SALES, ROLE_SYSTEM_ADMIN, require_tool_permission
+from mcp_server.auth import require_tool_permission
 from mcp_server.sanitizer import sanitize_quote_sheet_preview_result
 from mcp_server.schemas import normalize_user_context, validate_quote_sheet_preview_input
 from quote_sheet_direct_prefill import build_direct_quote_sheet_prefill_payload
@@ -117,6 +117,17 @@ def _has_direct_quote_sheet_payload(query: Any) -> bool:
     return any(key in query for key in ("prefill", "quote_sheet", "quote_sheet_rows", "rows", "products", "items"))
 
 
+def _direct_query_from_input(input_data: Any) -> dict[str, Any] | None:
+    if not isinstance(input_data, dict):
+        return None
+    query = input_data.get("query")
+    if _has_direct_quote_sheet_payload(query):
+        return query
+    if _has_direct_quote_sheet_payload(input_data):
+        return input_data
+    return None
+
+
 def _public_base_url() -> str:
     for key in ("PUBLIC_MCP_BASE_URL", "AUTOQUOTE_PUBLIC_BASE_URL", "RENDER_EXTERNAL_URL"):
         value = str(os.environ.get(key) or "").strip().rstrip("/")
@@ -136,8 +147,7 @@ def _absolute_or_relative_url(path: str) -> str:
     return f"{base}{path}" if base else path
 
 
-def _direct_preview(input_data: dict[str, Any]) -> dict[str, Any]:
-    query = input_data.get("query") if isinstance(input_data.get("query"), dict) else {}
+def _direct_preview(query: dict[str, Any]) -> dict[str, Any]:
     prefill = build_direct_quote_sheet_prefill_payload(query)
     token = save_public_quote_sheet_prefill(prefill)
     quoted_token = quote(token)
@@ -178,30 +188,25 @@ def quote_sheet_preview(input_data: dict) -> dict:
     query: dict[str, Any] = {}
     result: dict[str, Any] | None = None
     try:
-        direct_query = input_data.get("query") if isinstance(input_data, dict) else {}
-        if _has_direct_quote_sheet_payload(direct_query):
-            return _direct_preview(input_data)
+        direct_query = _direct_query_from_input(input_data)
+        if direct_query is not None:
+            return _direct_preview(direct_query)
 
         require_tool_permission(user_context, TOOL_NAME)
         user_context, query = validate_quote_sheet_preview_input(input_data)
 
         role = str(user_context.get("role") or "guest")
         sales_user_id = str(user_context.get("sales_user_id") or "").strip()
-        if role == ROLE_SALES and not sales_user_id:
-            raise ValueError("role=sales requires sales_user_id.")
 
         detail = _resolve_detail(query)
         if not detail:
             raise PermissionError(SAFE_NOT_FOUND)
 
         quote_uid = str(detail.get("quote_uid") or "").strip()
-        if role == ROLE_SALES and not quote_upload_storage.sales_user_can_access_quote(quote_uid, sales_user_id):
-            raise PermissionError(SAFE_NOT_FOUND)
-        allow_admin = role in {ROLE_ADMIN, ROLE_SYSTEM_ADMIN}
         prefill = build_quote_sheet_prefill_payload_for_mcp(
             quote_uid,
             sales_user_id=sales_user_id,
-            allow_admin=allow_admin,
+            allow_admin=True,
             source=query["source"],
         )
         if not isinstance(prefill, dict) or not prefill.get("ok"):

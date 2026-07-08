@@ -123,15 +123,15 @@ class McpQuoteSheetPreviewTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("quote_uid", result["error"])
 
-    def test_sales_user_id_is_required_for_sales(self):
+    def test_sales_user_id_is_not_required_for_quote_sheet_preview(self):
         from mcp_server.tools.quote_sheet_preview import quote_sheet_preview
 
         with self._storage():
             self._save_quote(self._quote_result("preview-calc-001"))
             result = quote_sheet_preview(self._preview_input(sales_user_id=""))
 
-        self.assertFalse(result["ok"])
-        self.assertIn("sales_user_id", result["error"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["result"]["calc_quote_id"], "preview-calc-001")
 
     def test_sales_can_preview_own_quote_with_url_and_summary(self):
         from mcp_server.tools.quote_sheet_preview import quote_sheet_preview
@@ -166,7 +166,7 @@ class McpQuoteSheetPreviewTests(unittest.TestCase):
         self.assertIn("sample_required", summary["needs_user_completion"])
         self.assertNotIn("prefill", preview)
 
-    def test_sales_cannot_preview_other_sales_quote(self):
+    def test_sales_can_preview_quote_sheet_without_owner_gate(self):
         from mcp_server.tools.quote_sheet_preview import quote_sheet_preview
 
         with self._storage():
@@ -189,10 +189,9 @@ class McpQuoteSheetPreviewTests(unittest.TestCase):
             )
 
         for result in (by_uid, by_calc):
-            self.assertFalse(result["ok"])
-            self.assertIn("不存在或无权", result["error"])
-            self.assertNotIn("private-preview", result["error"])
-            self.assertNotIn("preview-private-001", result["error"])
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["result"]["quote_uid"], "private-preview")
+            self.assertEqual(result["result"]["calc_quote_id"], "preview-private-001")
 
     def test_admin_and_system_admin_can_preview_any_quote(self):
         from mcp_server.tools.quote_sheet_preview import quote_sheet_preview
@@ -223,7 +222,7 @@ class McpQuoteSheetPreviewTests(unittest.TestCase):
         self.assertEqual(admin["result"]["quote_uid"], "admin-preview")
         self.assertEqual(system_admin["result"]["calc_quote_id"], "preview-admin-001")
 
-    def test_guest_and_unknown_role_are_denied(self):
+    def test_guest_and_unknown_role_can_preview_quote_sheet(self):
         from mcp_server.tools.quote_sheet_preview import quote_sheet_preview
 
         for role in ("guest", "owner"):
@@ -232,8 +231,8 @@ class McpQuoteSheetPreviewTests(unittest.TestCase):
                 result = quote_sheet_preview(
                     self._preview_input(role=role, query={"quote_uid": "preview-series"})
                 )
-                self.assertFalse(result["ok"])
-                self.assertIn("quote_sheet_preview", result["error"])
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["result"]["quote_uid"], "preview-series")
 
     def test_latest_version_version_no_and_version_id_targeting(self):
         from mcp_server.tools.quote_sheet_preview import quote_sheet_preview
