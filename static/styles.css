@@ -2791,6 +2791,7 @@ thead th {
 
 .qs-pdf-root {
   --qs-pdf-footer-inset: 6px;
+  --qs-pdf-signature-offset: 42mm;
   width: 210mm;
   max-width: 210mm;
   min-height: 0;
@@ -3422,7 +3423,7 @@ thead th {
 .qs-pdf-stamp-side {
   grid-column: 1;
   min-width: 0;
-  margin-top: 12px;
+  margin-top: var(--qs-pdf-signature-offset);
   padding-left: var(--qs-pdf-footer-inset);
   box-sizing: border-box;
   overflow: visible;
