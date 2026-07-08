@@ -117,6 +117,51 @@ def test_quote_sheet_preview_accepts_nested_quote_result_without_saved_quote(tmp
     assert row["total"] == "9800"
 
 
+def test_quote_sheet_preview_accepts_chinese_quote_summary_without_saved_quote(tmp_path, monkeypatch):
+    monkeypatch.setenv("QUOTE_SHEET_PUBLIC_DIR", str(tmp_path / "public_quote_sheets"))
+    monkeypatch.setenv("PUBLIC_MCP_BASE_URL", "https://autoquote-mcp.example")
+
+    from mcp_server.tools.quote_sheet_preview import quote_sheet_preview
+
+    result = quote_sheet_preview(
+        {
+            "query": {
+                "产品名称": "篮球包",
+                "尺寸": "32×19×45cm",
+                "描述": "篮球背包；600D防泼水",
+                "包装": "单个OPP袋，纸箱包装",
+                "报价汇总": [
+                    {
+                        "数量": 500,
+                        "EXW单价": 76.1,
+                        "总价": 38050,
+                        "备注": "500个；刀模费1000元按500个摊销。",
+                    },
+                    {
+                        "数量": 1000,
+                        "EXW单价": 73,
+                        "总价": 73000,
+                    },
+                ],
+                "include_prefill": True,
+            }
+        }
+    )
+
+    assert result["ok"] is True
+    payload = result["result"]
+    assert payload["prefill_summary"]["rows_count"] == 1
+    row = payload["prefill"]["rows"][0]
+    assert row["name"] == "篮球包"
+    assert row["size"] == "32×19×45cm"
+    assert row["desc"] == "篮球背包；600D防泼水"
+    assert row["pack"] == "单个OPP袋，纸箱包装"
+    assert row["qty"] == "500"
+    assert row["price"] == "76.1"
+    assert row["total"] == "38050"
+    assert row["note"] == ""
+
+
 def test_public_mcp_serves_quote_sheet_prefill_tokens_without_quote_agent_import(tmp_path, monkeypatch):
     monkeypatch.setenv("QUOTE_SHEET_PUBLIC_DIR", str(tmp_path / "public_quote_sheets"))
 
