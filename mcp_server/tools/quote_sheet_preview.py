@@ -117,6 +117,10 @@ def _direct_archive_enabled() -> bool:
     return raw not in {"0", "false", "no", "off", "none"}
 
 
+def _direct_archive_requested(query: dict[str, Any]) -> bool:
+    return _coerce_bool(query.get("archive"), False) or _coerce_bool(query.get("save_to_backend"), False)
+
+
 def _archive_direct_quote_sheet(
     query: dict[str, Any],
     prefill: dict[str, Any],
@@ -239,7 +243,11 @@ def _absolute_or_relative_url(path: str) -> str:
 def _direct_preview(query: dict[str, Any]) -> dict[str, Any]:
     prefill = build_direct_quote_sheet_prefill_payload(query)
     token = save_public_quote_sheet_prefill(prefill)
-    archive = _archive_direct_quote_sheet(query, prefill, token)
+    archive = (
+        _archive_direct_quote_sheet(query, prefill, token)
+        if _direct_archive_requested(query)
+        else {"saved": False, "skipped": True, "reason": "separate_tool_required"}
+    )
     quoted_token = quote(token)
     preview_path = f"/?view=quoteSheet&quote_sheet_token={quoted_token}"
     download_path = f"{preview_path}&exportMode=pdf_rmb"

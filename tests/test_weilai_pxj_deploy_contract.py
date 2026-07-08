@@ -22,6 +22,7 @@ class WeilaiPxjDeployContractTests(unittest.TestCase):
         self.assertEqual(
             set(PUBLIC_TOOL_REGISTRY),
             {
+                "quote_archive",
                 "quote_history",
                 "quote_get_detail",
                 "quote_sheet_preview",

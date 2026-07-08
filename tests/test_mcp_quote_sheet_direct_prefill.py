@@ -197,6 +197,7 @@ def test_quote_sheet_preview_can_archive_direct_prefill(monkeypatch, tmp_path):
         {
             "query": {
                 "product_name": "Basketball Bag",
+                "archive": True,
                 "quote_sheet_rows": [
                     {
                         "product_name": "Basketball Bag",

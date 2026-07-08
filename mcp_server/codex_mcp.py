@@ -67,6 +67,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp_server.tools.price_lookup import price_lookup as _price_lookup
 from mcp_server.tools.quote_admin import quote_admin as _quote_admin
 from mcp_server.tools.quote_approval_status import quote_approval_status as _quote_approval_status
+from mcp_server.tools.quote_archive import quote_archive as _quote_archive
 from mcp_server.tools.quote_calculate import quote_calculate as _quote_calculate
 from mcp_server.tools.quote_explain import quote_explain as _quote_explain
 from mcp_server.tools.quote_export import quote_export as _quote_export
@@ -92,6 +93,7 @@ TOOL_REGISTRY: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "quote_export": _quote_export,
     "quote_export_pdf": _quote_export_pdf,
     "quote_approval_status": _quote_approval_status,
+    "quote_archive": _quote_archive,
     "quote_get_history": _quote_get_history,
     "quote_get_detail": _quote_get_detail,
     "quote_sheet_preview": _quote_sheet_preview,
@@ -156,6 +158,11 @@ def quote_export_pdf(input_data: dict[str, Any] | None = None) -> dict[str, Any]
 @mcp.tool(description="Readonly approval status and admin feedback summary for a saved quote.")
 def quote_approval_status(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
     return _call_existing_tool("quote_approval_status", input_data)
+
+
+@mcp.tool(description="Receive GPT-calculated quote data into backend history without generating a quote sheet.")
+def quote_archive(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _call_existing_tool("quote_archive", input_data)
 
 
 @mcp.tool(description="List saved quote history through the original quote storage.")

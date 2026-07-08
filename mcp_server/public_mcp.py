@@ -72,6 +72,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from company_payment_accounts import get_company_payment_accounts_public, search_company_accounts
 from mcp_server.tools.quote_approval_status import quote_approval_status as _quote_approval_status
+from mcp_server.tools.quote_archive import quote_archive as _quote_archive
 from mcp_server.tools.quote_get_detail import quote_get_detail as _quote_get_detail
 from mcp_server.tools.quote_get_history import quote_get_history as _quote_get_history
 from mcp_server.tools.quote_sheet_preview import quote_sheet_preview as _quote_sheet_preview
@@ -140,6 +141,7 @@ QUOTE_SHEET_TOKEN_BOOTSTRAP = r"""
 
 
 PUBLIC_TOOL_REGISTRY: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    "quote_archive": _quote_archive,
     "quote_history": _quote_get_history,
     "quote_get_detail": _quote_get_detail,
     "quote_sheet_preview": _quote_sheet_preview,
@@ -453,6 +455,11 @@ def quote_history(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
 @mcp.tool(description="Load one saved quote detail and version data through the original quote storage.")
 def quote_get_detail(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
     return _call_public_tool("quote_get_detail", input_data)
+
+
+@mcp.tool(description="Receive GPT-calculated quote data into backend history without generating a quote sheet.")
+def quote_archive(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _call_public_tool("quote_archive", input_data)
 
 
 @mcp.tool(description="Build a saved quote sheet preview URL and controlled prefill summary.")

@@ -21,6 +21,7 @@ MCP_TOOL_PERMISSIONS: dict[str, set[str]] = {
     "quote_export": {ROLE_SALES, ROLE_ADMIN, ROLE_SYSTEM_ADMIN},
     "quote_export_pdf": {ROLE_SALES, ROLE_ADMIN, ROLE_SYSTEM_ADMIN},
     "quote_approval_status": {ROLE_SALES, ROLE_ADMIN, ROLE_SYSTEM_ADMIN},
+    "quote_archive": {ROLE_GUEST, ROLE_SALES, ROLE_ADMIN, ROLE_SYSTEM_ADMIN},
     "quote_get_history": {ROLE_SALES, ROLE_ADMIN, ROLE_SYSTEM_ADMIN},
     "quote_get_detail": {ROLE_SALES, ROLE_ADMIN, ROLE_SYSTEM_ADMIN},
     "quote_sheet_preview": {ROLE_GUEST, ROLE_SALES, ROLE_ADMIN, ROLE_SYSTEM_ADMIN},

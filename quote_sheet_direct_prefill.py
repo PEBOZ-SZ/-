@@ -108,7 +108,7 @@ def _pick_size(*objects: dict[str, Any]) -> str:
 
 
 def _first_tier(raw: dict[str, Any]) -> dict[str, Any]:
-    for key in ("tiers", "quote_tiers", "price_tiers", "quotes", "报价汇总", "报价档位", "报价表"):
+    for key in ("tiers", "quote_tiers", "price_tiers", "quotes", "summaries", "报价汇总", "报价档位", "报价表"):
         tiers = raw.get(key)
         if isinstance(tiers, list):
             for tier in tiers:
