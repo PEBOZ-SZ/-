@@ -87,6 +87,36 @@ def test_quote_sheet_preview_accepts_top_level_gpt_prefill_without_user_context(
     assert "quote_sheet_token=" in result["result"]["preview_url"]
 
 
+def test_quote_sheet_preview_accepts_nested_quote_result_without_saved_quote(tmp_path, monkeypatch):
+    monkeypatch.setenv("QUOTE_SHEET_PUBLIC_DIR", str(tmp_path / "public_quote_sheets"))
+    monkeypatch.setenv("PUBLIC_MCP_BASE_URL", "https://autoquote-mcp.example")
+
+    from mcp_server.tools.quote_sheet_preview import quote_sheet_preview
+
+    result = quote_sheet_preview(
+        {
+            "quote_result": {
+                "product_name": "化妆包",
+                "product_size": {"length_cm": 20, "width_cm": 10, "height_cm": 8},
+                "customer_description": "PU面料，拉链开口",
+                "packaging": "1个/OPP袋",
+                "tiers": [{"quantity": 1000, "exw_price": 9.8, "amount": 9800}],
+                "items": [{"name": "PU料", "amount": 2.5}],
+            },
+            "include_prefill": True,
+        }
+    )
+
+    assert result["ok"] is True
+    row = result["result"]["prefill"]["rows"][0]
+    assert row["name"] == "化妆包"
+    assert row["size"] == "20×10×8cm"
+    assert row["pack"] == "1个/OPP袋"
+    assert row["qty"] == "1000"
+    assert row["price"] == "9.8"
+    assert row["total"] == "9800"
+
+
 def test_public_mcp_serves_quote_sheet_prefill_tokens_without_quote_agent_import(tmp_path, monkeypatch):
     monkeypatch.setenv("QUOTE_SHEET_PUBLIC_DIR", str(tmp_path / "public_quote_sheets"))
 

@@ -114,7 +114,22 @@ def _coerce_bool(value: Any, default: bool = False) -> bool:
 def _has_direct_quote_sheet_payload(query: Any) -> bool:
     if not isinstance(query, dict):
         return False
-    return any(key in query for key in ("prefill", "quote_sheet", "quote_sheet_rows", "rows", "products", "items"))
+    return any(
+        key in query
+        for key in (
+            "prefill",
+            "quote_sheet",
+            "quote_result",
+            "result",
+            "calculated_quote",
+            "quotation",
+            "quote_sheet_rows",
+            "product_rows",
+            "rows",
+            "products",
+            "items",
+        )
+    )
 
 
 def _direct_query_from_input(input_data: Any) -> dict[str, Any] | None:
