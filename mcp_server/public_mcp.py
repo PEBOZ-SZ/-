@@ -113,20 +113,38 @@ QUOTE_SHEET_TOKEN_BOOTSTRAP = r"""
       return "";
     }
   }
+  function decodePayload(raw) {
+    var text = String(raw || "").trim();
+    if (!text) return null;
+    try {
+      var normalized = text.replace(/-/g, "+").replace(/_/g, "/");
+      while (normalized.length % 4) normalized += "=";
+      return JSON.parse(window.atob(normalized));
+    } catch (_) {
+      return null;
+    }
+  }
   async function openPublicQuoteSheet() {
     var token = (param("quote_sheet_token") || param("prefill_token") || "").trim();
-    if (!token) return;
+    var fallbackPayload = decodePayload(param("quote_sheet_payload") || param("prefill_payload") || "");
+    if (!token && !fallbackPayload) return;
     var bridge = window.QuoteSheetBridge || null;
     if (!bridge || typeof bridge.applyPrefill !== "function") {
       window.setTimeout(openPublicQuoteSheet, 120);
       return;
     }
     try {
-      var resp = await window.fetch("/api/public/quote-sheet-prefill/" + encodeURIComponent(token));
-      var payload = await resp.json().catch(function () { return {}; });
-      if (!resp.ok || !payload || payload.ok === false) {
-        throw new Error(payload.message || payload.error || "quote sheet data not found");
+      var payload = fallbackPayload || null;
+      if (token) {
+        var resp = await window.fetch("/api/public/quote-sheet-prefill/" + encodeURIComponent(token));
+        var fetched = await resp.json().catch(function () { return {}; });
+        if (resp.ok && fetched && fetched.ok !== false) {
+          payload = fetched;
+        } else if (!payload) {
+          throw new Error(fetched.message || fetched.error || "quote sheet data not found");
+        }
       }
+      if (!payload || payload.ok === false) throw new Error("quote sheet data not found");
       bridge.applyPrefill(payload);
       var exportMode = (param("exportMode") || param("export_mode") || "").trim();
       if (exportMode === "pdf_rmb" && typeof bridge.exportDirect === "function") {

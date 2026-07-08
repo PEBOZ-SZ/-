@@ -56,7 +56,9 @@ def test_quote_sheet_preview_accepts_gpt_prefill_without_saved_quote_or_role(tmp
     assert payload["prefill_available"] is True
     assert payload["prefill_summary"]["rows_count"] == 1
     assert "quote_sheet_token=" in payload["preview_url"]
+    assert "quote_sheet_payload=" in payload["preview_url"]
     assert "quote_sheet_token=" in payload["download_url"]
+    assert "quote_sheet_payload=" in payload["download_url"]
     assert "exportMode=pdf_rmb" in payload["download_url"]
     assert payload["prefill"]["meta"]["cust_name"] == "ACME"
     assert payload["prefill"]["meta"]["seller_contact"] == "Nina"
@@ -64,6 +66,47 @@ def test_quote_sheet_preview_accepts_gpt_prefill_without_saved_quote_or_role(tmp
     assert payload["prefill"]["rows"][0]["qty"] == "500"
     assert payload["prefill"]["rows"][0]["price"] == "18.6"
     assert payload["prefill"]["rows"][0]["total"] == "9300"
+
+
+def test_quote_sheet_preview_url_payload_can_refill_after_token_loss(tmp_path, monkeypatch):
+    monkeypatch.setenv("QUOTE_SHEET_PUBLIC_DIR", str(tmp_path / "public_quote_sheets"))
+    monkeypatch.setenv("PUBLIC_MCP_BASE_URL", "https://autoquote-mcp.example")
+
+    from mcp_server.tools.quote_sheet_preview import quote_sheet_preview
+    from quote_sheet_public_store import decode_public_quote_sheet_prefill_payload
+
+    result = quote_sheet_preview(
+        {
+            "query": {
+                "product_name": "Token Backup Bag",
+                "quote_sheet_rows": [
+                    {
+                        "product_name": "Token Backup Bag",
+                        "size": "20x10x8cm",
+                        "quantity": 300,
+                        "unit_price": 11.2,
+                    }
+                ],
+                "include_prefill": True,
+            }
+        }
+    )
+
+    preview_url = result["result"]["preview_url"]
+    encoded = preview_url.split("quote_sheet_payload=", 1)[1].split("&", 1)[0]
+    decoded = decode_public_quote_sheet_prefill_payload(encoded)
+
+    assert decoded is not None
+    assert decoded["ok"] is True
+    assert decoded["rows"][0]["name"] == "Token Backup Bag"
+    assert decoded["rows"][0]["qty"] == "300"
+
+
+def test_public_bootstrap_mentions_payload_fallback() -> None:
+    source = Path("mcp_server/public_mcp.py").read_text(encoding="utf-8")
+
+    assert "quote_sheet_payload" in source
+    assert "decodePayload" in source
 
 
 def test_quote_sheet_preview_keeps_product_image_for_direct_prefill(tmp_path, monkeypatch):

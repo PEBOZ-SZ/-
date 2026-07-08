@@ -12,7 +12,7 @@ from mcp_server.sanitizer import sanitize_quote_sheet_preview_result
 from mcp_server.schemas import normalize_user_context, validate_quote_sheet_preview_input
 from quote_sheet_direct_prefill import build_direct_quote_sheet_prefill_payload
 from quote_sheet_prefill import build_quote_sheet_prefill_payload_for_mcp
-from quote_sheet_public_store import save_public_quote_sheet_prefill
+from quote_sheet_public_store import encode_public_quote_sheet_prefill_payload, save_public_quote_sheet_prefill
 
 
 TOOL_NAME = "quote_sheet_preview"
@@ -243,6 +243,7 @@ def _absolute_or_relative_url(path: str) -> str:
 def _direct_preview(query: dict[str, Any]) -> dict[str, Any]:
     prefill = build_direct_quote_sheet_prefill_payload(query)
     token = save_public_quote_sheet_prefill(prefill)
+    payload_fallback = encode_public_quote_sheet_prefill_payload(prefill)
     archive = (
         _archive_direct_quote_sheet(query, prefill, token)
         if _direct_archive_requested(query)
@@ -250,6 +251,8 @@ def _direct_preview(query: dict[str, Any]) -> dict[str, Any]:
     )
     quoted_token = quote(token)
     preview_path = f"/?view=quoteSheet&quote_sheet_token={quoted_token}"
+    if payload_fallback:
+        preview_path = f"{preview_path}&quote_sheet_payload={quote(payload_fallback)}"
     download_path = f"{preview_path}&exportMode=pdf_rmb"
     if str(query.get("export_mode") or query.get("exportMode") or "").strip().lower() == "pdf_fob":
         download_path = f"{preview_path}&exportMode=pdf_fob"

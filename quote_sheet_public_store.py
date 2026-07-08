@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -11,6 +12,7 @@ from typing import Any
 
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{12,96}$")
 DEFAULT_TTL_HOURS = 24
+DEFAULT_URL_PAYLOAD_MAX_CHARS = 12000
 
 
 def _store_dir() -> Path:
@@ -61,6 +63,55 @@ def save_public_quote_sheet_prefill(prefill: dict[str, Any], *, ttl_hours: int =
     _token_path(token).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
     cleanup_expired_public_quote_sheets()
     return token
+
+
+def _prefill_for_url_payload(prefill: dict[str, Any]) -> dict[str, Any]:
+    safe = dict(prefill)
+    rows = safe.get("rows")
+    if isinstance(rows, list):
+        compact_rows: list[Any] = []
+        for raw in rows:
+            if not isinstance(raw, dict):
+                compact_rows.append(raw)
+                continue
+            row = dict(raw)
+            image = str(row.get("image_data_url") or "").strip()
+            if len(image) > 1000:
+                row["image_data_url"] = ""
+            compact_rows.append(row)
+        safe["rows"] = compact_rows
+    return safe
+
+
+def encode_public_quote_sheet_prefill_payload(
+    prefill: dict[str, Any],
+    *,
+    max_chars: int = DEFAULT_URL_PAYLOAD_MAX_CHARS,
+) -> str:
+    if not isinstance(prefill, dict):
+        return ""
+    safe = _prefill_for_url_payload(prefill)
+    try:
+        raw = json.dumps(safe, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+        encoded = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    except Exception:
+        return ""
+    if len(encoded) > max(512, int(max_chars or DEFAULT_URL_PAYLOAD_MAX_CHARS)):
+        return ""
+    return encoded
+
+
+def decode_public_quote_sheet_prefill_payload(payload: str) -> dict[str, Any] | None:
+    text = str(payload or "").strip()
+    if not text:
+        return None
+    try:
+        padded = text + "=" * (-len(text) % 4)
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+        data = json.loads(raw.decode("ascii"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def load_public_quote_sheet_prefill(token: str) -> dict[str, Any] | None:
