@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import os
 from typing import Any
 from urllib.parse import quote
@@ -111,6 +112,58 @@ def _coerce_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
+def _direct_archive_enabled() -> bool:
+    raw = str(os.environ.get("QUOTE_SHEET_DIRECT_ARCHIVE") or "1").strip().lower()
+    return raw not in {"0", "false", "no", "off", "none"}
+
+
+def _archive_direct_quote_sheet(
+    query: dict[str, Any],
+    prefill: dict[str, Any],
+    token: str,
+) -> dict[str, Any]:
+    if not _direct_archive_enabled():
+        return {"saved": False, "skipped": True, "reason": "disabled"}
+    rows = prefill.get("rows") if isinstance(prefill.get("rows"), list) else []
+    rows = [row for row in rows if isinstance(row, dict)]
+    if not rows:
+        return {"saved": False, "skipped": True, "reason": "no_rows"}
+    meta = prefill.get("meta") if isinstance(prefill.get("meta"), dict) else {}
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    quote_no = str(
+        meta.get("quote_no")
+        or query.get("quote_no")
+        or query.get("quote_sheet_no")
+        or f"GPT-{stamp}-{token[:6]}"
+    ).strip()
+    payload = {
+        "quote_no": quote_no,
+        "quote_sheet_no": quote_no,
+        "salesperson": str(meta.get("seller_contact") or query.get("salesperson") or "gpt_action"),
+        "customer_name": str(meta.get("cust_name") or query.get("customer_name") or query.get("cust_name") or ""),
+        "customer_country": str(meta.get("cust_addr") or query.get("customer_country") or ""),
+        "currency_unit": str(query.get("currency_unit") or "RMB/pc"),
+        "products": rows,
+        "quote_sheet_rows": rows,
+        "materials": query.get("materials") if isinstance(query.get("materials"), list) else [],
+        "summaries": query.get("summaries") if isinstance(query.get("summaries"), list) else [],
+        "source_file_name": str(query.get("source_file_name") or query.get("file_name") or "GPT quote sheet"),
+    }
+    try:
+        from quote_import_store import import_quote_payload
+
+        saved = import_quote_payload(payload, sales_user_id="gpt_action", sales_user_name="GPT")
+    except Exception as exc:
+        return {"saved": False, "error": str(exc)}
+    return {
+        "saved": bool(saved.get("success")),
+        "quote_uid": str(saved.get("quote_uid") or ""),
+        "calc_quote_id": str(saved.get("quote_id") or ""),
+        "version_no": saved.get("version_no"),
+        "preview_url": str(saved.get("preview_url") or ""),
+    }
+
+
 def _has_direct_quote_sheet_payload(query: Any) -> bool:
     if not isinstance(query, dict):
         return False
@@ -186,6 +239,7 @@ def _absolute_or_relative_url(path: str) -> str:
 def _direct_preview(query: dict[str, Any]) -> dict[str, Any]:
     prefill = build_direct_quote_sheet_prefill_payload(query)
     token = save_public_quote_sheet_prefill(prefill)
+    archive = _archive_direct_quote_sheet(query, prefill, token)
     quoted_token = quote(token)
     preview_path = f"/?view=quoteSheet&quote_sheet_token={quoted_token}"
     download_path = f"{preview_path}&exportMode=pdf_rmb"
@@ -196,10 +250,10 @@ def _direct_preview(query: dict[str, Any]) -> dict[str, Any]:
         or _coerce_bool(query.get("include_prefill"), False)
     )
     result = {
-        "quote_uid": "",
-        "calc_quote_id": "",
+        "quote_uid": archive.get("quote_uid") if archive.get("saved") else "",
+        "calc_quote_id": archive.get("calc_quote_id") if archive.get("saved") else "",
         "version_id": None,
-        "version_no": None,
+        "version_no": archive.get("version_no") if archive.get("saved") else None,
         "product_name": str(prefill.get("product_name") or ""),
         "approval_status": "not_required",
         "preview_token": token,
@@ -207,6 +261,7 @@ def _direct_preview(query: dict[str, Any]) -> dict[str, Any]:
         "download_url": _absolute_or_relative_url(download_path),
         "prefill_available": True,
         "prefill_summary": _prefill_summary(prefill),
+        "archive": archive,
     }
     if include_prefill:
         result["prefill"] = prefill

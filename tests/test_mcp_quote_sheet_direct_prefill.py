@@ -1,10 +1,17 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+@pytest.fixture(autouse=True)
+def disable_direct_quote_sheet_archive(monkeypatch):
+    monkeypatch.setenv("QUOTE_SHEET_DIRECT_ARCHIVE", "0")
 
 
 def test_quote_sheet_preview_accepts_gpt_prefill_without_saved_quote_or_role(tmp_path, monkeypatch):
@@ -160,6 +167,60 @@ def test_quote_sheet_preview_accepts_chinese_quote_summary_without_saved_quote(t
     assert row["price"] == "76.1"
     assert row["total"] == "38050"
     assert row["note"] == ""
+
+
+def test_quote_sheet_preview_can_archive_direct_prefill(monkeypatch, tmp_path):
+    monkeypatch.setenv("QUOTE_SHEET_PUBLIC_DIR", str(tmp_path / "public_quote_sheets"))
+    monkeypatch.setenv("PUBLIC_MCP_BASE_URL", "https://autoquote-mcp.example")
+    monkeypatch.setenv("QUOTE_SHEET_DIRECT_ARCHIVE", "1")
+
+    import quote_import_store
+    from mcp_server.tools.quote_sheet_preview import quote_sheet_preview
+
+    captured = {}
+
+    def fake_import_quote_payload(payload, *, sales_user_id=None, sales_user_name=None):
+        captured["payload"] = payload
+        captured["sales_user_id"] = sales_user_id
+        captured["sales_user_name"] = sales_user_name
+        return {
+            "success": True,
+            "quote_uid": payload["quote_no"],
+            "quote_id": "gpt-import-test",
+            "version_no": 1,
+            "preview_url": "/?view=quoteSheet&quote_uid=test",
+        }
+
+    monkeypatch.setattr(quote_import_store, "import_quote_payload", fake_import_quote_payload)
+
+    result = quote_sheet_preview(
+        {
+            "query": {
+                "product_name": "Basketball Bag",
+                "quote_sheet_rows": [
+                    {
+                        "product_name": "Basketball Bag",
+                        "size": "32x19x45cm",
+                        "quantity": 500,
+                        "unit_price": 76.1,
+                        "amount": 38050,
+                    }
+                ],
+                "include_prefill": True,
+            }
+        }
+    )
+
+    assert result["ok"] is True
+    payload = result["result"]
+    assert payload["archive"]["saved"] is True
+    assert payload["quote_uid"].startswith("GPT-")
+    assert payload["calc_quote_id"] == "gpt-import-test"
+    assert captured["sales_user_id"] == "gpt_action"
+    assert captured["payload"]["products"][0]["name"] == "Basketball Bag"
+    assert captured["payload"]["products"][0]["qty"] == "500"
+    assert captured["payload"]["products"][0]["price"] == "76.1"
+    assert captured["payload"]["products"][0]["total"] == "38050"
 
 
 def test_public_mcp_serves_quote_sheet_prefill_tokens_without_quote_agent_import(tmp_path, monkeypatch):

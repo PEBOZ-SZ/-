@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import importlib.util
 import sys
+import threading
 import types
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
@@ -78,6 +82,20 @@ SERVER_NAME = "peboz-auto-quote-public"
 SERVER_VERSION = "0.1.0"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STATIC_DIR = PROJECT_ROOT / "static"
+_ADMIN_PROXY_LOCK = threading.Lock()
+_ADMIN_PROXY_SERVER: Any | None = None
+_ADMIN_PROXY_THREAD: threading.Thread | None = None
+_ADMIN_PROXY_PORT: int | None = None
+_HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
 QUOTE_SHEET_TOKEN_BOOTSTRAP = r"""
 <script>
 (function () {
@@ -213,6 +231,120 @@ def _static_response(path: Path) -> Response:
     return FileResponse(resolved)
 
 
+def _admin_proxy_enabled() -> bool:
+    raw = str(os.environ.get("PUBLIC_MCP_ENABLE_ADMIN") or "1").strip().lower()
+    return raw not in {"0", "false", "no", "off", "none"}
+
+
+def _ensure_admin_proxy_server() -> int:
+    global _ADMIN_PROXY_PORT, _ADMIN_PROXY_SERVER, _ADMIN_PROXY_THREAD
+    if not _admin_proxy_enabled():
+        raise RuntimeError("admin proxy is disabled")
+    if _ADMIN_PROXY_PORT:
+        return int(_ADMIN_PROXY_PORT)
+    with _ADMIN_PROXY_LOCK:
+        if _ADMIN_PROXY_PORT:
+            return int(_ADMIN_PROXY_PORT)
+
+        allow_ips = str(os.environ.get("QUOTE_ADMIN_ALLOW_IPS") or "").strip()
+        if allow_ips:
+            allowed = {item.strip() for item in allow_ips.split(",") if item.strip()}
+            if "127.0.0.1" not in allowed:
+                os.environ["QUOTE_ADMIN_ALLOW_IPS"] = f"{allow_ips},127.0.0.1"
+
+        import server as legacy_server
+
+        legacy_server.init_quote_storage()
+        httpd = legacy_server.ThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            legacy_server.QuoteHandler,
+        )
+        setattr(httpd, "_quote_site", "admin")
+        thread = threading.Thread(
+            target=httpd.serve_forever,
+            daemon=True,
+            name="public-mcp-admin-proxy",
+        )
+        thread.start()
+        _ADMIN_PROXY_SERVER = httpd
+        _ADMIN_PROXY_THREAD = thread
+        _ADMIN_PROXY_PORT = int(httpd.server_address[1])
+        return int(_ADMIN_PROXY_PORT)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        return None
+
+
+def _proxy_request_headers(request: Request) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for key, value in request.headers.items():
+        low = key.lower()
+        if low in _HOP_BY_HOP_HEADERS or low in {"host", "content-length"}:
+            continue
+        headers[key] = value
+    headers["X-Forwarded-Host"] = request.headers.get("host", "")
+    headers["X-Forwarded-Proto"] = request.url.scheme
+    return headers
+
+
+def _proxy_response_headers(source: Any) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for key in source.keys():
+        low = str(key).lower()
+        if low in _HOP_BY_HOP_HEADERS or low in {"content-length"}:
+            continue
+        values = source.get_all(key) if hasattr(source, "get_all") else [source.get(key)]
+        if not values:
+            continue
+        headers[str(key)] = str(values[-1])
+    return headers
+
+
+def _admin_proxy_sync(method: str, path: str, query: str, headers: dict[str, str], body: bytes) -> Response:
+    port = _ensure_admin_proxy_server()
+    target = f"http://127.0.0.1:{port}{path}"
+    if query:
+        target = f"{target}?{query}"
+    data = body if method.upper() not in {"GET", "HEAD"} else None
+    req = urllib.request.Request(target, data=data, headers=headers, method=method.upper())
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(req, timeout=45) as resp:
+            payload = resp.read()
+            status = int(resp.status)
+            resp_headers = _proxy_response_headers(resp.headers)
+    except urllib.error.HTTPError as err:
+        payload = err.read()
+        status = int(err.code)
+        resp_headers = _proxy_response_headers(err.headers)
+    return Response(content=payload, status_code=status, headers=resp_headers)
+
+
+async def _admin_proxy(request: Request) -> Response:
+    try:
+        body = await request.body()
+        headers = _proxy_request_headers(request)
+        return await asyncio.to_thread(
+            _admin_proxy_sync,
+            request.method,
+            request.url.path,
+            request.url.query,
+            headers,
+            body,
+        )
+    except Exception as exc:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "admin_proxy_failed",
+                "message": str(exc),
+            },
+            status_code=502,
+        )
+
+
 def _index_response() -> Response:
     index_path = STATIC_DIR / "index.html"
     if not index_path.exists() or not index_path.is_file():
@@ -239,6 +371,42 @@ async def public_index_html(request: Request) -> Response:
 async def public_static(request: Request) -> Response:
     rel = str(request.path_params.get("path") or "").lstrip("/")
     return _static_response(STATIC_DIR / rel)
+
+
+@mcp.custom_route(
+    "/admin",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    include_in_schema=False,
+)
+async def public_admin_root(request: Request) -> Response:
+    return await _admin_proxy(request)
+
+
+@mcp.custom_route(
+    "/admin/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    include_in_schema=False,
+)
+async def public_admin(request: Request) -> Response:
+    return await _admin_proxy(request)
+
+
+@mcp.custom_route(
+    "/admin-api",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    include_in_schema=False,
+)
+async def public_admin_api_root(request: Request) -> Response:
+    return await _admin_proxy(request)
+
+
+@mcp.custom_route(
+    "/admin-api/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    include_in_schema=False,
+)
+async def public_admin_api(request: Request) -> Response:
+    return await _admin_proxy(request)
 
 
 @mcp.custom_route("/api/public/quote-sheet-prefill/{token}", methods=["GET"], include_in_schema=False)
