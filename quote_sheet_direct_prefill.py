@@ -5,6 +5,20 @@ from typing import Any
 
 
 MAX_PRODUCT_ROWS = 10
+INTERNAL_NOTE_KEYWORDS = (
+    "刀模",
+    "模具",
+    "摊销",
+    "AI暂估",
+    "待确认",
+    "毛利",
+    "管理费",
+    "加工费",
+    "成本",
+    "物料",
+    "EXW",
+    "FOB",
+)
 
 
 def _first_str(*values: Any) -> str:
@@ -38,9 +52,75 @@ def _pick(obj: dict[str, Any], *keys: str) -> str:
     return ""
 
 
+def _format_size_value(value: Any) -> str:
+    if isinstance(value, dict):
+        length = _pick(value, "length_cm", "l_cm", "LCM", "length", "L")
+        width = _pick(value, "width_cm", "w_cm", "WCM", "width", "W")
+        height = _pick(value, "height_cm", "h_cm", "HCM", "height", "H")
+        parts = [part for part in (length, width, height) if part]
+        if len(parts) >= 2:
+            return "×".join(parts) + "cm"
+    return _first_str(value)
+
+
+def _pick_size(*objects: dict[str, Any]) -> str:
+    for obj in objects:
+        if not isinstance(obj, dict):
+            continue
+        for key in ("size", "product_size", "dimensions", "dimension", "spec", "specification"):
+            if key in obj:
+                text = _format_size_value(obj.get(key))
+                if text:
+                    return text
+    return ""
+
+
+def _first_tier(raw: dict[str, Any]) -> dict[str, Any]:
+    tiers = raw.get("tiers")
+    if isinstance(tiers, list):
+        for tier in tiers:
+            if isinstance(tier, dict):
+                return tier
+    return {}
+
+
+def _parse_float(value: Any) -> float | None:
+    text = _first_str(value).replace(",", "")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _format_amount_from_qty_price(qty: str, price: str) -> str:
+    qty_num = _parse_float(qty)
+    price_num = _parse_float(price)
+    if qty_num is None or price_num is None:
+        return ""
+    return _format_text_number(qty_num * price_num)
+
+
+def _customer_note(*objects: dict[str, Any]) -> str:
+    for obj in objects:
+        note = _pick(obj, "customer_note", "customer_remark", "quote_sheet_note", "visible_note")
+        if not note:
+            continue
+        upper = note.upper()
+        if any(keyword.upper() in upper for keyword in INTERNAL_NOTE_KEYWORDS):
+            return ""
+        return note
+    return ""
+
+
 def _source(raw: dict[str, Any]) -> dict[str, Any]:
     data = raw.get("prefill") if isinstance(raw.get("prefill"), dict) else raw
-    return data.get("quote_sheet") if isinstance(data.get("quote_sheet"), dict) else data
+    for key in ("quote_sheet", "quote_result", "result", "calculated_quote", "quotation"):
+        nested = data.get(key)
+        if isinstance(nested, dict):
+            return nested
+    return data
 
 
 def _direct_meta(raw: dict[str, Any]) -> dict[str, str]:
@@ -71,41 +151,70 @@ def _direct_meta(raw: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-def _candidate_rows(raw: dict[str, Any]) -> list[Any]:
-    for key in ("rows", "quote_sheet_rows", "products", "items"):
+def _candidate_rows_with_source(raw: dict[str, Any]) -> tuple[str, list[Any]]:
+    for key in ("quote_sheet_rows", "product_rows", "products", "rows", "items"):
         value = raw.get(key)
         if isinstance(value, list):
-            return value
-    return []
+            return key, value
+    return "", []
+
+
+def _candidate_rows(raw: dict[str, Any]) -> list[Any]:
+    return _candidate_rows_with_source(raw)[1]
 
 
 def _direct_rows(raw: dict[str, Any]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for ix, item in enumerate(_candidate_rows(raw)[:MAX_PRODUCT_ROWS]):
-        if not isinstance(item, dict):
-            continue
-        rows.append(
-            {
-                "line_order": ix,
-                "name": _pick(item, "name", "product_name", "item_name", "material_name"),
-                "size": _pick(item, "size", "spec", "specification", "dimensions"),
-                "desc": _pick(item, "desc", "description", "scope"),
-                "pack": _pick(item, "pack", "packing", "packaging"),
-                "qty": _pick(item, "qty", "quantity", "count", "usage"),
-                "price": _format_text_number(_pick(item, "price", "unit_price", "unitPrice")),
-                "total": _format_text_number(_pick(item, "total", "amount", "subtotal", "line_total")),
-                "note": _pick(item, "note", "remark", "remarks"),
-                "taxed_price": _format_text_number(_pick(item, "taxed_price", "taxed_price_text")),
-                "fob_price": _format_text_number(_pick(item, "fob_price", "fob_unit_price")),
-                "fob_price_text": _format_text_number(_pick(item, "fob_price_text")),
-                "fob_price_usd": _format_text_number(_pick(item, "fob_price_usd", "unit_price_usd")),
-                "fob_price_usd_text": _format_text_number(_pick(item, "fob_price_usd_text")),
-                "fob_total": _format_text_number(_pick(item, "fob_total")),
-                "fob_total_usd": _format_text_number(_pick(item, "fob_total_usd")),
-                "image_data_url": _pick(item, "image_data_url", "image_url", "image"),
-            }
-        )
-    return rows
+    source_key, candidates = _candidate_rows_with_source(raw)
+    source_rows = [item for item in candidates if isinstance(item, dict)]
+    item = source_rows[0] if source_rows else {}
+    tier = _first_tier(raw)
+    item_first = source_key != "items"
+    qty_sources = (item, tier, raw) if item_first else (raw, tier, item)
+    price_sources = (item, tier, raw) if item_first else (raw, tier, item)
+    total_sources = (item, tier, raw) if item_first else (raw, tier, item)
+    qty = ""
+    for src in qty_sources:
+        qty = _pick(src, "qty", "quantity", "count")
+        if qty:
+            break
+    price = ""
+    for src in price_sources:
+        price = _format_text_number(_pick(src, "price", "unit_price", "unitPrice", "exw_price", "fob_price", "exw"))
+        if price:
+            break
+    total = ""
+    for src in total_sources:
+        total = _format_text_number(_pick(src, "total", "amount", "subtotal", "line_total"))
+        if total:
+            break
+    if not total:
+        total = _format_amount_from_qty_price(qty, price)
+    row = {
+        "line_order": 0,
+        "name": _pick(raw, "product_name", "quote_product_name", "product", "name")
+        or _pick(item, "product_name", "quote_product_name", "item_name", "name"),
+        "size": _pick_size(raw, item),
+        "desc": _pick(raw, "customer_description", "quote_sheet_description", "description", "desc")
+        or _pick(item, "customer_description", "quote_sheet_description", "description", "desc", "scope"),
+        "pack": _pick(raw, "pack", "packing", "packaging", "package")
+        or _pick(item, "pack", "packing", "packaging", "package"),
+        "qty": qty,
+        "price": price,
+        "total": total,
+        "note": _customer_note(raw, item),
+        "taxed_price": _format_text_number(_pick(item, "taxed_price", "taxed_price_text")),
+        "fob_price": _format_text_number(_pick(item, "fob_price", "fob_unit_price")),
+        "fob_price_text": _format_text_number(_pick(item, "fob_price_text")),
+        "fob_price_usd": _format_text_number(_pick(item, "fob_price_usd", "unit_price_usd")),
+        "fob_price_usd_text": _format_text_number(_pick(item, "fob_price_usd_text")),
+        "fob_total": _format_text_number(_pick(item, "fob_total")),
+        "fob_total_usd": _format_text_number(_pick(item, "fob_total_usd")),
+        "image_data_url": _pick(raw, "image_data_url", "image_url", "image", "product_image")
+        or _pick(item, "image_data_url", "image_url", "image", "product_image"),
+    }
+    if any(_first_str(row.get(key)) for key in ("name", "size", "desc", "pack", "qty", "price", "total")):
+        return [row]
+    return []
 
 
 def build_direct_quote_sheet_prefill_payload(raw: dict[str, Any]) -> dict[str, Any]:
