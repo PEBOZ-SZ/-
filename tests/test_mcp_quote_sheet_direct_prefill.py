@@ -66,6 +66,65 @@ def test_quote_sheet_preview_accepts_gpt_prefill_without_saved_quote_or_role(tmp
     assert payload["prefill"]["rows"][0]["total"] == "9300"
 
 
+def test_quote_sheet_preview_keeps_product_image_for_direct_prefill(tmp_path, monkeypatch):
+    monkeypatch.setenv("QUOTE_SHEET_PUBLIC_DIR", str(tmp_path / "public_quote_sheets"))
+    monkeypatch.setenv("PUBLIC_MCP_BASE_URL", "https://autoquote-mcp.example")
+
+    from mcp_server.tools.quote_sheet_preview import quote_sheet_preview
+
+    product_image = "data:image/png;base64,PRODUCT_IMAGE"
+
+    result = quote_sheet_preview(
+        {
+            "query": {
+                "product_name": "Lunch Bag",
+                "product_image_data_url": product_image,
+                "quote_sheet_rows": [
+                    {
+                        "product_name": "Lunch Bag",
+                        "quantity": 100,
+                        "unit_price": 9.8,
+                    }
+                ],
+                "include_prefill": True,
+            }
+        }
+    )
+
+    assert result["ok"] is True
+    row = result["result"]["prefill"]["rows"][0]
+    assert row["image_data_url"] == product_image
+
+
+def test_quote_sheet_preview_rejects_bom_image_for_direct_prefill(tmp_path, monkeypatch):
+    monkeypatch.setenv("QUOTE_SHEET_PUBLIC_DIR", str(tmp_path / "public_quote_sheets"))
+    monkeypatch.setenv("PUBLIC_MCP_BASE_URL", "https://autoquote-mcp.example")
+
+    from mcp_server.tools.quote_sheet_preview import quote_sheet_preview
+
+    result = quote_sheet_preview(
+        {
+            "query": {
+                "product_name": "Lunch Bag",
+                "image_data_url": "data:image/png;base64,BOM_TABLE",
+                "image_role": "bom table screenshot",
+                "quote_sheet_rows": [
+                    {
+                        "product_name": "Lunch Bag",
+                        "quantity": 100,
+                        "unit_price": 9.8,
+                    }
+                ],
+                "include_prefill": True,
+            }
+        }
+    )
+
+    assert result["ok"] is True
+    row = result["result"]["prefill"]["rows"][0]
+    assert row["image_data_url"] == ""
+
+
 def test_quote_sheet_preview_accepts_top_level_gpt_prefill_without_user_context(tmp_path, monkeypatch):
     monkeypatch.setenv("QUOTE_SHEET_PUBLIC_DIR", str(tmp_path / "public_quote_sheets"))
     monkeypatch.setenv("PUBLIC_MCP_BASE_URL", "https://autoquote-mcp.example")

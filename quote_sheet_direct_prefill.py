@@ -51,6 +51,62 @@ INTERNAL_NOTE_KEYWORDS = (
     "EXW",
     "FOB",
 )
+PRODUCT_IMAGE_VALUE_KEYS = (
+    "product_image_data_url",
+    "product_image_url",
+    "product_photo",
+    "product_photo_url",
+    "style_image_data_url",
+    "style_image_url",
+    "main_image_data_url",
+    "main_image_url",
+    "款式图片",
+    "产品图片",
+    "包图",
+    "product_image",
+)
+GENERIC_IMAGE_VALUE_KEYS = ("image_data_url", "image_url", "data_url", "image")
+IMAGE_CONTEXT_KEYS = (
+    "image_role",
+    "image_type",
+    "image_source",
+    "source_role",
+    "caption",
+    "label",
+    "file_name",
+    "filename",
+    "original_name",
+    "source_path",
+    "tags",
+)
+REJECT_IMAGE_KEYWORDS = (
+    "bom",
+    "material",
+    "materials",
+    "cutting",
+    "piece",
+    "structure",
+    "spec",
+    "table",
+    "sheet",
+    "excel",
+    "worksheet",
+    "spreadsheet",
+    "receipt",
+    "invoice",
+    "logo",
+    "barcode",
+    "qr",
+    "物料",
+    "材料",
+    "裁片",
+    "结构",
+    "表格",
+    "截图",
+    "明细",
+    "工艺",
+    "包装表",
+)
 
 
 def _first_str(*values: Any) -> str:
@@ -81,6 +137,93 @@ def _pick(obj: dict[str, Any], *keys: str) -> str:
             text = _first_str(obj.get(key))
             if text:
                 return text
+    return ""
+
+
+def _image_context(obj: dict[str, Any], key: str = "") -> str:
+    if not isinstance(obj, dict):
+        return str(key or "").strip().lower()
+    parts: list[str] = [str(key or "")]
+    for ctx_key in IMAGE_CONTEXT_KEYS:
+        value = obj.get(ctx_key)
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            parts.extend(str(item) for item in value if item)
+        else:
+            parts.append(str(value))
+    return " ".join(parts).strip().lower()
+
+
+def _looks_like_image_value(value: Any) -> bool:
+    text = _first_str(value)
+    if not text:
+        return False
+    if text.lower() in {"true", "false", "yes", "no", "1", "0"}:
+        return False
+    return True
+
+
+def _is_rejected_image_candidate(obj: dict[str, Any], key: str) -> bool:
+    context = _image_context(obj, key)
+    if any(keyword in context for keyword in REJECT_IMAGE_KEYWORDS):
+        return True
+    try:
+        from quote_sheet_content import has_non_product_image_keywords
+
+        return bool(has_non_product_image_keywords(context))
+    except Exception:
+        return False
+
+
+def _pick_image_value_from_obj(obj: dict[str, Any], keys: tuple[str, ...]) -> str:
+    if not isinstance(obj, dict):
+        return ""
+    for key in keys:
+        if key not in obj or not _looks_like_image_value(obj.get(key)):
+            continue
+        if _is_rejected_image_candidate(obj, key):
+            continue
+        return _first_str(obj.get(key))
+    return ""
+
+
+def _pick_image_from_list(values: Any) -> str:
+    if not isinstance(values, list):
+        return ""
+    candidates = [item for item in values if isinstance(item, dict)]
+    product_first = sorted(
+        candidates,
+        key=lambda item: 0
+        if str(item.get("product_image") or item.get("image_type") or item.get("image_role") or "")
+        .strip()
+        .lower()
+        in {"1", "true", "product", "product_photo", "style", "main", "款式图", "产品图"}
+        else 1,
+    )
+    for item in product_first:
+        image = _pick_image_value_from_obj(item, PRODUCT_IMAGE_VALUE_KEYS + GENERIC_IMAGE_VALUE_KEYS)
+        if image:
+            return image
+    return ""
+
+
+def _pick_product_image(*objects: dict[str, Any]) -> str:
+    for obj in objects:
+        image = _pick_image_value_from_obj(obj, PRODUCT_IMAGE_VALUE_KEYS)
+        if image:
+            return image
+    for obj in objects:
+        image = _pick_image_value_from_obj(obj, GENERIC_IMAGE_VALUE_KEYS)
+        if image:
+            return image
+    for obj in objects:
+        if not isinstance(obj, dict):
+            continue
+        for key in ("product_images", "quote_sheet_images", "images", "attachments", "files"):
+            image = _pick_image_from_list(obj.get(key))
+            if image:
+                return image
     return ""
 
 
@@ -248,8 +391,7 @@ def _direct_rows(raw: dict[str, Any]) -> list[dict[str, Any]]:
         "fob_price_usd_text": _format_text_number(_pick(item, "fob_price_usd_text")),
         "fob_total": _format_text_number(_pick(item, "fob_total")),
         "fob_total_usd": _format_text_number(_pick(item, "fob_total_usd")),
-        "image_data_url": _pick(raw, "image_data_url", "image_url", "image", "product_image")
-        or _pick(item, "image_data_url", "image_url", "image", "product_image"),
+        "image_data_url": _pick_product_image(raw, item),
     }
     if any(_first_str(row.get(key)) for key in ("name", "size", "desc", "pack", "qty", "price", "total")):
         return [row]

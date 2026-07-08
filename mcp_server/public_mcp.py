@@ -76,6 +76,12 @@ from mcp_server.tools.quote_archive import quote_archive as _quote_archive
 from mcp_server.tools.quote_get_detail import quote_get_detail as _quote_get_detail
 from mcp_server.tools.quote_get_history import quote_get_history as _quote_get_history
 from mcp_server.tools.quote_sheet_preview import quote_sheet_preview as _quote_sheet_preview
+from quote_sheet_export_validate import validate_quote_sheet_export_payload
+from quote_sheet_i18n import (
+    get_quote_sheet_terms_public,
+    reload_quote_sheet_terms,
+    translate_quote_sheet_fields,
+)
 from quote_sheet_public_store import load_public_quote_sheet_prefill
 
 
@@ -221,6 +227,35 @@ def _public_payment_accounts_search_response(
         limit=_parse_limit(limit_raw),
         account_type=str(account_type or "").strip(),
     )
+
+
+def _public_quote_sheet_translate_en_response(payload: Any) -> dict[str, Any]:
+    bundle = payload.get("bundle") if isinstance(payload, dict) else None
+    if not isinstance(bundle, dict):
+        return {"ok": False, "error": "invalid_request", "message": "缺少 bundle"}
+    translated = translate_quote_sheet_fields(bundle)
+    terms = get_quote_sheet_terms_public()
+    labels = terms.get("labels") if isinstance(terms.get("labels"), dict) else {}
+    fixed = terms.get("fixed") if isinstance(terms.get("fixed"), dict) else {}
+    out = dict(translated)
+    out["labels"] = labels
+    out["fixed"] = fixed
+    return out
+
+
+def _public_quote_sheet_validate_export_response(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "invalid_request", "message": "JSON object required"}
+    export_lang = str(payload.get("export_lang") or "cn").strip().lower()
+    bundle = payload.get("bundle") if isinstance(payload.get("bundle"), dict) else {}
+    return validate_quote_sheet_export_payload(export_lang=export_lang, bundle=bundle)
+
+
+async def _request_json(request: Request) -> Any:
+    try:
+        return await request.json()
+    except Exception:
+        return {}
 
 
 def _static_response(path: Path) -> Response:
@@ -439,6 +474,29 @@ async def public_payment_accounts_search(request: Request) -> Response:
             account_type=account_type,
         )
     )
+
+
+@mcp.custom_route("/api/quote-sheet/translate-en", methods=["POST"], include_in_schema=False)
+async def public_quote_sheet_translate_en(request: Request) -> Response:
+    payload = await _request_json(request)
+    result = _public_quote_sheet_translate_en_response(payload)
+    status = 200 if result.get("ok") is not False else 400
+    return JSONResponse(result, status_code=status)
+
+
+@mcp.custom_route("/api/quote-sheet/validate-export", methods=["POST"], include_in_schema=False)
+async def public_quote_sheet_validate_export(request: Request) -> Response:
+    payload = await _request_json(request)
+    result = _public_quote_sheet_validate_export_response(payload)
+    status = 200 if result.get("error") != "invalid_request" else 400
+    return JSONResponse(result, status_code=status)
+
+
+@mcp.custom_route("/api/quote-sheet/terms/reload", methods=["POST"], include_in_schema=False)
+async def public_quote_sheet_terms_reload(request: Request) -> Response:
+    del request
+    reload_quote_sheet_terms()
+    return JSONResponse(get_quote_sheet_terms_public())
 
 
 @mcp.custom_route("/healthz", methods=["GET"], include_in_schema=False)
