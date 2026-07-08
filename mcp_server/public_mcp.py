@@ -66,6 +66,7 @@ _patch_pydantic_settings_for_local_sdk()
 from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from company_payment_accounts import get_company_payment_accounts_public, search_company_accounts
 from mcp_server.tools.quote_approval_status import quote_approval_status as _quote_approval_status
 from mcp_server.tools.quote_get_detail import quote_get_detail as _quote_get_detail
 from mcp_server.tools.quote_get_history import quote_get_history as _quote_get_history
@@ -178,6 +179,30 @@ def _load_public_quote_sheet_prefill_for_route(token: str) -> dict[str, Any]:
     return prefill
 
 
+def _parse_limit(raw: Any, default: int = 12) -> int:
+    try:
+        return max(1, min(100, int(str(raw).strip())))
+    except (TypeError, ValueError):
+        return default
+
+
+def _public_payment_accounts_response() -> dict[str, Any]:
+    return get_company_payment_accounts_public()
+
+
+def _public_payment_accounts_search_response(
+    query: Any,
+    *,
+    limit_raw: Any = "12",
+    account_type: Any = "",
+) -> dict[str, Any]:
+    return search_company_accounts(
+        query,
+        limit=_parse_limit(limit_raw),
+        account_type=str(account_type or "").strip(),
+    )
+
+
 def _static_response(path: Path) -> Response:
     resolved = path.resolve()
     static_root = STATIC_DIR.resolve()
@@ -223,6 +248,27 @@ async def public_quote_sheet_prefill(request: Request) -> Response:
     if not payload.get("ok"):
         return JSONResponse(payload, status_code=404)
     return JSONResponse(payload)
+
+
+@mcp.custom_route("/api/quote-sheet/payment-accounts", methods=["GET"], include_in_schema=False)
+async def public_payment_accounts(request: Request) -> Response:
+    del request
+    return JSONResponse(_public_payment_accounts_response())
+
+
+@mcp.custom_route("/api/quote-sheet/payment-accounts/search", methods=["GET"], include_in_schema=False)
+async def public_payment_accounts_search(request: Request) -> Response:
+    qs = request.query_params
+    query = qs.get("q") or qs.get("query") or ""
+    limit_raw = qs.get("limit") or "12"
+    account_type = qs.get("account_type") or qs.get("type") or ""
+    return JSONResponse(
+        _public_payment_accounts_search_response(
+            query,
+            limit_raw=limit_raw,
+            account_type=account_type,
+        )
+    )
 
 
 @mcp.custom_route("/healthz", methods=["GET"], include_in_schema=False)
