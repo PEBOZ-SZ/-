@@ -5,6 +5,38 @@ from typing import Any
 
 
 MAX_PRODUCT_ROWS = 10
+NAME_KEYS = ("product_name", "quote_product_name", "product", "name", "产品名称", "产品名", "品名", "名称")
+SIZE_KEYS = ("size", "product_size", "dimensions", "dimension", "spec", "specification", "尺寸", "规格尺寸", "规格")
+DESC_KEYS = (
+    "customer_description",
+    "quote_sheet_description",
+    "description",
+    "desc",
+    "scope",
+    "描述",
+    "产品描述",
+    "说明",
+)
+PACK_KEYS = ("pack", "packing", "packaging", "package", "包装", "包装方式", "包装信息")
+QTY_KEYS = ("qty", "quantity", "count", "数量", "报价数量", "订单数量", "个数", "PCS")
+PRICE_KEYS = (
+    "price",
+    "unit_price",
+    "unitPrice",
+    "exw_price",
+    "fob_price",
+    "exw",
+    "EXW",
+    "EXW单价",
+    "EXW价",
+    "FOB单价",
+    "FOB价",
+    "单价",
+    "报价单价",
+    "客户单价",
+    "出厂价",
+)
+TOTAL_KEYS = ("total", "amount", "subtotal", "line_total", "总价", "金额", "小计", "合计", "总金额", "报价金额")
 INTERNAL_NOTE_KEYWORDS = (
     "刀模",
     "模具",
@@ -67,7 +99,7 @@ def _pick_size(*objects: dict[str, Any]) -> str:
     for obj in objects:
         if not isinstance(obj, dict):
             continue
-        for key in ("size", "product_size", "dimensions", "dimension", "spec", "specification"):
+        for key in SIZE_KEYS:
             if key in obj:
                 text = _format_size_value(obj.get(key))
                 if text:
@@ -76,9 +108,19 @@ def _pick_size(*objects: dict[str, Any]) -> str:
 
 
 def _first_tier(raw: dict[str, Any]) -> dict[str, Any]:
-    tiers = raw.get("tiers")
-    if isinstance(tiers, list):
-        for tier in tiers:
+    for key in ("tiers", "quote_tiers", "price_tiers", "quotes", "报价汇总", "报价档位", "报价表"):
+        tiers = raw.get(key)
+        if isinstance(tiers, list):
+            for tier in tiers:
+                if isinstance(tier, dict):
+                    return tier
+        if isinstance(tiers, dict):
+            return tiers
+    summary = raw.get("summary") or raw.get("quote_summary") or raw.get("汇总")
+    if isinstance(summary, dict):
+        return summary
+    if isinstance(summary, list):
+        for tier in summary:
             if isinstance(tier, dict):
                 return tier
     return {}
@@ -104,7 +146,7 @@ def _format_amount_from_qty_price(qty: str, price: str) -> str:
 
 def _customer_note(*objects: dict[str, Any]) -> str:
     for obj in objects:
-        note = _pick(obj, "customer_note", "customer_remark", "quote_sheet_note", "visible_note")
+        note = _pick(obj, "customer_note", "customer_remark", "quote_sheet_note", "visible_note", "客户备注")
         if not note:
             continue
         upper = note.upper()
@@ -152,7 +194,7 @@ def _direct_meta(raw: dict[str, Any]) -> dict[str, str]:
 
 
 def _candidate_rows_with_source(raw: dict[str, Any]) -> tuple[str, list[Any]]:
-    for key in ("quote_sheet_rows", "product_rows", "products", "rows", "items"):
+    for key in ("quote_sheet_rows", "product_rows", "products", "rows", "产品明细", "产品行", "报价汇总", "items"):
         value = raw.get(key)
         if isinstance(value, list):
             return key, value
@@ -168,36 +210,33 @@ def _direct_rows(raw: dict[str, Any]) -> list[dict[str, Any]]:
     source_rows = [item for item in candidates if isinstance(item, dict)]
     item = source_rows[0] if source_rows else {}
     tier = _first_tier(raw)
-    item_first = source_key != "items"
+    item_first = source_key not in {"items", "报价汇总"}
     qty_sources = (item, tier, raw) if item_first else (raw, tier, item)
     price_sources = (item, tier, raw) if item_first else (raw, tier, item)
     total_sources = (item, tier, raw) if item_first else (raw, tier, item)
     qty = ""
     for src in qty_sources:
-        qty = _pick(src, "qty", "quantity", "count")
+        qty = _pick(src, *QTY_KEYS)
         if qty:
             break
     price = ""
     for src in price_sources:
-        price = _format_text_number(_pick(src, "price", "unit_price", "unitPrice", "exw_price", "fob_price", "exw"))
+        price = _format_text_number(_pick(src, *PRICE_KEYS))
         if price:
             break
     total = ""
     for src in total_sources:
-        total = _format_text_number(_pick(src, "total", "amount", "subtotal", "line_total"))
+        total = _format_text_number(_pick(src, *TOTAL_KEYS))
         if total:
             break
     if not total:
         total = _format_amount_from_qty_price(qty, price)
     row = {
         "line_order": 0,
-        "name": _pick(raw, "product_name", "quote_product_name", "product", "name")
-        or _pick(item, "product_name", "quote_product_name", "item_name", "name"),
+        "name": _pick(raw, *NAME_KEYS) or _pick(item, *NAME_KEYS, "item_name"),
         "size": _pick_size(raw, item),
-        "desc": _pick(raw, "customer_description", "quote_sheet_description", "description", "desc")
-        or _pick(item, "customer_description", "quote_sheet_description", "description", "desc", "scope"),
-        "pack": _pick(raw, "pack", "packing", "packaging", "package")
-        or _pick(item, "pack", "packing", "packaging", "package"),
+        "desc": _pick(raw, *DESC_KEYS) or _pick(item, *DESC_KEYS),
+        "pack": _pick(raw, *PACK_KEYS) or _pick(item, *PACK_KEYS),
         "qty": qty,
         "price": price,
         "total": total,

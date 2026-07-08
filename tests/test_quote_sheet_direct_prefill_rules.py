@@ -86,3 +86,34 @@ def test_direct_prefill_reads_nested_quote_result_payload():
     assert row["qty"] == "1000"
     assert row["price"] == "9.8"
     assert row["total"] == "9800"
+
+
+def test_direct_prefill_reads_chinese_quote_sheet_field_names():
+    payload = build_direct_quote_sheet_prefill_payload(
+        {
+            "产品名称": "篮球包",
+            "尺寸": "32×19×45cm",
+            "描述": "篮球背包；600D防泼水",
+            "包装": "单个OPP袋，纸箱包装",
+            "报价汇总": [
+                {
+                    "数量": 500,
+                    "EXW单价": 76.1,
+                    "总价": 38050,
+                    "备注": "500个；刀模费1000元按500个摊销。",
+                },
+                {"数量": 1000, "EXW单价": 73, "总价": 73000},
+            ],
+        }
+    )
+
+    assert len(payload["rows"]) == 1
+    row = payload["rows"][0]
+    assert row["name"] == "篮球包"
+    assert row["size"] == "32×19×45cm"
+    assert row["desc"] == "篮球背包；600D防泼水"
+    assert row["pack"] == "单个OPP袋，纸箱包装"
+    assert row["qty"] == "500"
+    assert row["price"] == "76.1"
+    assert row["total"] == "38050"
+    assert row["note"] == ""
