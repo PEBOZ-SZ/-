@@ -8,6 +8,12 @@ torch>=2.1.0
 openpyxl>=3.1.0
 # 读取 Excel 97-2003 .xls（上传）
 xlrd>=2.0.1
+# 正式报价单 PDF 导出
+reportlab>=4.0.0
+# 报价单链接兜底产品图缩略压缩
+Pillow>=10.0.0
+# GPT/API 包装层
+fastapi>=0.115.0
 
 # Codex custom MCP STDIO server
 mcp>=1.27.0

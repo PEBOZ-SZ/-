@@ -1,4 +1,6 @@
 import sys
+import base64
+import io
 from pathlib import Path
 
 import pytest
@@ -100,6 +102,50 @@ def test_quote_sheet_preview_url_payload_can_refill_after_token_loss(tmp_path, m
     assert decoded["ok"] is True
     assert decoded["rows"][0]["name"] == "Token Backup Bag"
     assert decoded["rows"][0]["qty"] == "300"
+
+
+def test_quote_sheet_preview_url_payload_keeps_compact_product_image(tmp_path, monkeypatch):
+    monkeypatch.setenv("QUOTE_SHEET_PUBLIC_DIR", str(tmp_path / "public_quote_sheets"))
+    monkeypatch.setenv("PUBLIC_MCP_BASE_URL", "https://autoquote-mcp.example")
+
+    from mcp_server.tools.quote_sheet_preview import quote_sheet_preview
+    from quote_sheet_public_store import decode_public_quote_sheet_prefill_payload
+
+    from PIL import Image
+
+    img = Image.new("RGB", (900, 650))
+    pixels = img.load()
+    for y in range(650):
+        for x in range(900):
+            pixels[x, y] = ((x * 7 + y * 3) % 256, (x * 5 + y * 11) % 256, (x * 13 + y * 17) % 256)
+    image_io = io.BytesIO()
+    img.save(image_io, format="PNG")
+    large_image = "data:image/png;base64," + base64.b64encode(image_io.getvalue()).decode("ascii")
+
+    result = quote_sheet_preview(
+        {
+            "query": {
+                "product_name": "Image Backup Bag",
+                "product_image_data_url": large_image,
+                "quote_sheet_rows": [
+                    {
+                        "product_name": "Image Backup Bag",
+                        "quantity": 200,
+                        "unit_price": 16,
+                    }
+                ],
+            }
+        }
+    )
+
+    preview_url = result["result"]["preview_url"]
+    encoded = preview_url.split("quote_sheet_payload=", 1)[1].split("&", 1)[0]
+    decoded = decode_public_quote_sheet_prefill_payload(encoded)
+    image = decoded["rows"][0]["image_data_url"]
+
+    assert image.startswith("data:image/")
+    assert len(image) < len(large_image)
+    assert len(image) <= 9000
 
 
 def test_public_bootstrap_mentions_payload_fallback() -> None:

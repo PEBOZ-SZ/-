@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import os
 import re
@@ -13,6 +14,9 @@ from typing import Any
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{12,96}$")
 DEFAULT_TTL_HOURS = 24
 DEFAULT_URL_PAYLOAD_MAX_CHARS = 12000
+DEFAULT_URL_IMAGE_MAX_CHARS = 5500
+
+_DATA_IMAGE_RE = re.compile(r"^data:(image/[A-Za-z0-9.+-]+);base64,(.+)$", re.S)
 
 
 def _store_dir() -> Path:
@@ -65,6 +69,55 @@ def save_public_quote_sheet_prefill(prefill: dict[str, Any], *, ttl_hours: int =
     return token
 
 
+def _compact_image_data_url_for_url_payload(
+    image: str,
+    *,
+    max_chars: int = DEFAULT_URL_IMAGE_MAX_CHARS,
+) -> str:
+    text = str(image or "").strip()
+    if not text:
+        return ""
+    if len(text) <= max(200, int(max_chars or DEFAULT_URL_IMAGE_MAX_CHARS)):
+        return text
+    match = _DATA_IMAGE_RE.match(text)
+    if not match:
+        return ""
+    try:
+        raw = base64.b64decode(match.group(2), validate=False)
+        from PIL import Image, ImageOps
+
+        with Image.open(io.BytesIO(raw)) as img:
+            img = ImageOps.exif_transpose(img)
+            if img.mode not in {"RGB", "L"}:
+                bg = Image.new("RGB", img.size, (255, 255, 255))
+                if "A" in img.getbands():
+                    bg.paste(img, mask=img.getchannel("A"))
+                    img = bg
+                else:
+                    img = img.convert("RGB")
+            else:
+                img = img.convert("RGB")
+            for size, quality in (
+                (360, 62),
+                (300, 56),
+                (240, 50),
+                (180, 46),
+                (140, 40),
+                (100, 35),
+            ):
+                candidate = img.copy()
+                candidate.thumbnail((size, size), Image.Resampling.LANCZOS)
+                out = io.BytesIO()
+                candidate.save(out, format="JPEG", quality=quality, optimize=True)
+                b64 = base64.b64encode(out.getvalue()).decode("ascii")
+                data_url = f"data:image/jpeg;base64,{b64}"
+                if len(data_url) <= max(200, int(max_chars or DEFAULT_URL_IMAGE_MAX_CHARS)):
+                    return data_url
+    except Exception:
+        return ""
+    return ""
+
+
 def _prefill_for_url_payload(prefill: dict[str, Any]) -> dict[str, Any]:
     safe = dict(prefill)
     rows = safe.get("rows")
@@ -76,8 +129,8 @@ def _prefill_for_url_payload(prefill: dict[str, Any]) -> dict[str, Any]:
                 continue
             row = dict(raw)
             image = str(row.get("image_data_url") or "").strip()
-            if len(image) > 1000:
-                row["image_data_url"] = ""
+            if image:
+                row["image_data_url"] = _compact_image_data_url_for_url_payload(image)
             compact_rows.append(row)
         safe["rows"] = compact_rows
     return safe
