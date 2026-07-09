@@ -3487,6 +3487,10 @@ thead th {
   font-variant-numeric: tabular-nums;
 }
 
+.qs-pdf-bank #pvBank {
+  white-space: pre-line;
+}
+
 .qs-pdf-bank-account-line[hidden] {
   display: none !important;
 }

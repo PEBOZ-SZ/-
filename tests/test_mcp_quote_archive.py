@@ -8,6 +8,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 def test_quote_archive_saves_gpt_quote_without_creating_quote_sheet(monkeypatch):
+    monkeypatch.setenv("PUBLIC_MCP_BASE_URL", "https://autoquote-mcp.example")
+
     import quote_import_store
 
     captured = {}
@@ -48,7 +50,13 @@ def test_quote_archive_saves_gpt_quote_without_creating_quote_sheet(monkeypatch)
     assert result["result"]["quote_uid"] == "GPT-ARCHIVE-001"
     assert result["result"]["calc_quote_id"] == "gpt-import-archive-test"
     assert "preview_token" not in result["result"]
-    assert "download_url" not in result["result"]
+    assert "quote_sheet_preview_url" in result["result"]
+    assert "quote_sheet_download_url" in result["result"]
+    assert result["result"]["quote_sheet_preview_url"].startswith(
+        "https://autoquote-mcp.example/?view=quoteSheet&quote_sheet_token="
+    )
+    assert "quote_sheet_payload=" in result["result"]["quote_sheet_preview_url"]
+    assert "quote_sheet_payload=" in result["result"]["quote_sheet_download_url"]
     assert captured["sales_user_id"] == "gpt_action"
     assert captured["sales_user_name"] == "GPT"
     assert captured["payload"]["source_file_name"] == "GPT backend archive"
@@ -56,6 +64,56 @@ def test_quote_archive_saves_gpt_quote_without_creating_quote_sheet(monkeypatch)
     assert captured["payload"]["products"][0]["qty"] == "500"
     assert captured["payload"]["products"][0]["price"] == "60"
     assert captured["payload"]["products"][0]["total"] == "30000"
+
+
+def test_quote_archive_preview_url_payload_can_prefill_product_rows(monkeypatch, tmp_path):
+    monkeypatch.setenv("QUOTE_SHEET_PUBLIC_DIR", str(tmp_path / "public_quote_sheets"))
+    monkeypatch.setenv("PUBLIC_MCP_BASE_URL", "https://autoquote-mcp.example")
+
+    import quote_import_store
+
+    def fake_import_quote_payload(payload, *, sales_user_id=None, sales_user_name=None):
+        return {
+            "success": True,
+            "quote_uid": payload["quote_no"],
+            "quote_id": "gpt-import-prefill-test",
+            "version_id": 9,
+            "version_no": 1,
+        }
+
+    monkeypatch.setattr(quote_import_store, "import_quote_payload", fake_import_quote_payload)
+
+    from mcp_server.tools.quote_archive import quote_archive
+    from quote_sheet_public_store import decode_public_quote_sheet_prefill_payload
+
+    result = quote_archive(
+        {
+            "query": {
+                "quote_no": "GPT-ARCHIVE-PREFILL-001",
+                "quote_sheet_rows": [
+                    {
+                        "product_name": "Main Lunch Bag",
+                        "size": "25x18x20cm",
+                        "description": "600D Oxford with PEVA lining",
+                        "packaging": "1pc/opp bag",
+                        "quantity": 300,
+                        "unit_price": 18.5,
+                        "amount": 5550,
+                    }
+                ],
+            }
+        }
+    )
+
+    url = result["result"]["quote_sheet_preview_url"]
+    encoded = url.split("quote_sheet_payload=", 1)[1].split("&", 1)[0]
+    decoded = decode_public_quote_sheet_prefill_payload(encoded)
+
+    assert decoded["rows"][0]["name"] == "Main Lunch Bag"
+    assert decoded["rows"][0]["size"] == "25x18x20cm"
+    assert decoded["rows"][0]["qty"] == "300"
+    assert decoded["rows"][0]["price"] == "18.5"
+    assert decoded["rows"][0]["total"] == "5550"
 
 
 def test_quote_archive_accepts_chinese_gpt_summary(monkeypatch):

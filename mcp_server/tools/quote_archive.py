@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
 from typing import Any
+from urllib.parse import quote
 
 from mcp_server.schemas import normalize_user_context
 from quote_sheet_direct_prefill import build_direct_quote_sheet_prefill_payload
+from quote_sheet_public_store import encode_public_quote_sheet_prefill_payload, save_public_quote_sheet_prefill
 
 
 TOOL_NAME = "quote_archive"
@@ -118,7 +121,10 @@ def _summaries(query: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict[s
     return summaries
 
 
-def _archive_payload(input_data: dict[str, Any], query: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
+def _archive_payload(
+    input_data: dict[str, Any],
+    query: dict[str, Any],
+) -> tuple[dict[str, Any], str, str, dict[str, Any]]:
     prefill = build_direct_quote_sheet_prefill_payload(_query_for_prefill(query))
     rows = [row for row in _list_or_empty(prefill.get("rows")) if isinstance(row, dict)]
     if not rows:
@@ -148,14 +154,48 @@ def _archive_payload(input_data: dict[str, Any], query: dict[str, Any]) -> tuple
     payment = query.get("payment")
     if isinstance(payment, dict):
         payload["payment"] = payment
-    return payload, sales_user_id, sales_user_name
+    return payload, sales_user_id, sales_user_name, prefill
+
+
+def _public_base_url() -> str:
+    for key in ("PUBLIC_MCP_BASE_URL", "AUTOQUOTE_PUBLIC_BASE_URL", "RENDER_EXTERNAL_URL"):
+        value = str(os.environ.get(key) or "").strip().rstrip("/")
+        if value:
+            return value
+    hostname = str(os.environ.get("RENDER_EXTERNAL_HOSTNAME") or "").strip().strip("/")
+    if hostname:
+        return f"https://{hostname}"
+    service_name = str(os.environ.get("RENDER_SERVICE_NAME") or "").strip()
+    if service_name:
+        return f"https://{service_name}.onrender.com"
+    return ""
+
+
+def _absolute_or_relative_url(path: str) -> str:
+    base = _public_base_url()
+    return f"{base}{path}" if base else path
+
+
+def _quote_sheet_prefill_urls(prefill: dict[str, Any], query: dict[str, Any]) -> dict[str, str]:
+    token = save_public_quote_sheet_prefill(prefill)
+    payload_fallback = encode_public_quote_sheet_prefill_payload(prefill)
+    preview_path = f"/?view=quoteSheet&quote_sheet_token={quote(token)}"
+    if payload_fallback:
+        preview_path = f"{preview_path}&quote_sheet_payload={quote(payload_fallback)}"
+    export_mode = str(query.get("export_mode") or query.get("exportMode") or "").strip().lower()
+    download_mode = "pdf_fob" if export_mode == "pdf_fob" else "pdf_rmb"
+    download_path = f"{preview_path}&exportMode={download_mode}"
+    return {
+        "quote_sheet_preview_url": _absolute_or_relative_url(preview_path),
+        "quote_sheet_download_url": _absolute_or_relative_url(download_path),
+    }
 
 
 def quote_archive(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
     data = input_data if isinstance(input_data, dict) else {}
     try:
         query = _query_from_input(data)
-        payload, sales_user_id, sales_user_name = _archive_payload(data, query)
+        payload, sales_user_id, sales_user_name, prefill = _archive_payload(data, query)
 
         from quote_import_store import import_quote_payload
 
@@ -165,6 +205,7 @@ def quote_archive(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
             sales_user_name=sales_user_name,
         )
         backend_received = bool(saved.get("success"))
+        quote_sheet_urls = _quote_sheet_prefill_urls(prefill, query) if backend_received else {}
         return {
             "ok": backend_received,
             "tool": TOOL_NAME,
@@ -174,6 +215,9 @@ def quote_archive(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
                 "calc_quote_id": str(saved.get("quote_id") or ""),
                 "version_id": saved.get("version_id"),
                 "version_no": saved.get("version_no"),
+                "preview_url": quote_sheet_urls.get("quote_sheet_preview_url", ""),
+                "download_url": quote_sheet_urls.get("quote_sheet_download_url", ""),
+                **quote_sheet_urls,
                 "status": "imported" if backend_received else "failed",
             },
         }

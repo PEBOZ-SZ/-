@@ -65,6 +65,41 @@
     return String(account.alipay || "").trim();
   }
 
+  function isForeignPayeeAccount(account) {
+    if (!account || typeof account !== "object") {
+      return false;
+    }
+    const type = String(account.account_type || "").trim().toLowerCase();
+    const currency = String(account.currency || "").trim().toUpperCase();
+    return type === "foreign" || currency === "USD" || Boolean(String(account.swift_code || "").trim());
+  }
+
+  function buildBankBlockPdfText(account) {
+    if (!account || typeof account !== "object") {
+      return "";
+    }
+    if (String(account.bank_block_text || "").trim()) {
+      return String(account.bank_block_text || "").trim();
+    }
+    if (!isForeignPayeeAccount(account)) {
+      return "";
+    }
+    const lines = ["Bank Information:"];
+    const name = String(account.company_name_en || account.company_name || "").trim();
+    const ac = String(account.bank_account || "").trim();
+    const bank = String(account.bank_name_en || account.bank_name || "").trim();
+    const swift = String(account.swift_code || "").trim();
+    const addr = String(account.bank_address_en || "").trim();
+    const note = String(account.bank_note_en || "").trim();
+    if (name) lines.push(`NAME: ${name}`);
+    if (ac) lines.push(`A/C: ${ac}`);
+    if (bank) lines.push(`BANK NAME: ${bank}`);
+    if (swift) lines.push(`SWIFT CODE: ${swift}`);
+    if (addr) lines.push(`ADD: ${addr}`);
+    if (note) lines.push(note);
+    return lines.join("\n");
+  }
+
   function setPayeeStatus(text, level = STATUS_LEVELS.idle) {
     const node = el("qsPayeeStatus");
     if (!node) {
@@ -221,13 +256,23 @@
     }
     payeeState.selected = {
       company_name: String(account.company_name || "").trim(),
+      company_name_en: String(account.company_name_en || "").trim(),
+      display_label_cn: String(account.display_label_cn || "").trim(),
+      currency: String(account.currency || "").trim(),
+      account_type: String(account.account_type || "").trim(),
+      account_variant: String(account.account_variant || "").trim(),
       bank_name: String(account.bank_name || "").trim(),
+      bank_name_en: String(account.bank_name_en || "").trim(),
       bank_account: String(account.bank_account || "").trim(),
+      bank_address_en: String(account.bank_address_en || "").trim(),
+      swift_code: String(account.swift_code || "").trim(),
+      bank_note_en: String(account.bank_note_en || "").trim(),
+      bank_block_text: String(account.bank_block_text || "").trim(),
       alipay: String(account.alipay || "").trim(),
     };
     const input = el("qsPayeeCompany");
     if (input) {
-      input.value = payeeState.selected.company_name;
+      input.value = payeeState.selected.company_name || payeeState.selected.company_name_en;
     }
     renderPayeePreview(payeeState.selected);
     setPayeeStatus("已匹配收款账户，导出 PDF 时将写入对应银行与支付宝信息。", STATUS_LEVELS.success);
@@ -249,10 +294,12 @@
       autoSelectUnique = true,
       showDropdown = true,
       silent = false,
+      accountType = "",
     } = options;
     const text = String(query || "").trim();
+    const accountTypeParam = String(accountType || "").trim().toLowerCase();
     const token = ++payeeState.searchToken;
-    if (!text && !showDropdown) {
+    if (!text && !showDropdown && !accountTypeParam) {
       clearPayeeSelection();
       renderPayeeCandidates([], { showEmpty: false });
       setPayeeStatus("");
@@ -264,8 +311,11 @@
     }
     try {
       const limit = text ? PAYEE_LIST_LIMIT : PAYEE_LIST_LIMIT;
+      const accountTypeQuery = accountTypeParam
+        ? `&account_type=${encodeURIComponent(accountTypeParam)}`
+        : "";
       const resp = await window.fetch(
-        `/api/quote-sheet/payment-accounts/search?q=${encodeURIComponent(text)}&limit=${limit}`,
+        `/api/quote-sheet/payment-accounts/search?q=${encodeURIComponent(text)}&limit=${limit}${accountTypeQuery}`,
       );
       const payload = await resp.json().catch(() => ({}));
       if (token !== payeeState.searchToken) {
@@ -281,6 +331,10 @@
         return selectPayeeAccount(exact) ? exact : null;
       }
       if (!text) {
+        if (candidates.length === 1 && autoSelectUnique) {
+          setPayeeDropdownOpen(false);
+          return selectPayeeAccount(candidates[0]) ? candidates[0] : null;
+        }
         renderPayeeCandidates(candidates, { showEmpty: !candidates.length });
         setPayeeStatus("");
         return null;
@@ -699,12 +753,28 @@
     });
   }
 
+  async function ensureForeignPayeeForEnglishExport() {
+    const selected = currentPayeeAccountForPdf();
+    if (isForeignPayeeAccount(selected)) {
+      return true;
+    }
+    const exact = await fetchPayeeAccounts("SHENZHEN PEBOZ PRODUCTS LIMITED", {
+      accountType: "foreign",
+      autoSelectExact: true,
+      autoSelectUnique: true,
+      showDropdown: false,
+      silent: true,
+    });
+    return Boolean(exact || isForeignPayeeAccount(currentPayeeAccountForPdf()));
+  }
+
   const enState = {
     ready: false,
     translating: false,
     translatedAt: "",
     meta: null,
     rows: null,
+    payee: null,
     labels: null,
     fixed: null,
     untranslatedFields: [],
@@ -1706,10 +1776,11 @@
     syncPdfBottomRemark(currentPdfLang);
     syncPdfValidityRemark();
 
-    const payeeAccount = currentPayeeAccountForPdf();
-    const bankNameText = buildBankNamePdfText(payeeAccount);
-    const bankAccountText = buildBankAccountPdfText(payeeAccount);
-    const alipayText = buildAlipayPdfText(payeeAccount);
+    const payeeAccount = currentPdfLang === "en" && enState.payee ? enState.payee : currentPayeeAccountForPdf();
+    const bankBlockText = buildBankBlockPdfText(payeeAccount);
+    const bankNameText = bankBlockText || buildBankNamePdfText(payeeAccount);
+    const bankAccountText = bankBlockText ? "" : buildBankAccountPdfText(payeeAccount);
+    const alipayText = bankBlockText ? "" : buildAlipayPdfText(payeeAccount);
     setText("pvBank", bankNameText);
     setText("pvBankAccount", bankAccountText);
     const bankAccountLine = el("pvBankAccountLine");
@@ -2007,7 +2078,13 @@
       });
     }
 
-    return { meta, rows };
+    const payee = currentPayeeAccountForPdf();
+    return {
+      meta,
+      rows,
+      payee,
+      selected_bank_account_type: payee?.account_type || "",
+    };
   }
 
   async function requestTranslateEnglish() {
@@ -2020,6 +2097,7 @@
     updateTranslateStatus("正在翻译英文内容...", STATUS_LEVELS.busy);
 
     try {
+      await ensureForeignPayeeForEnglishExport();
       const resp = await window.fetch("/api/quote-sheet/translate-en", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2032,6 +2110,7 @@
 
       enState.meta = payload.meta_en || {};
       enState.rows = Array.isArray(payload.rows_en) ? payload.rows_en : [];
+      enState.payee = payload.payee_en || null;
       enState.labels = payload.labels || {};
       enState.fixed = payload.fixed || {};
       enState.untranslatedFields = Array.isArray(payload.untranslated_fields)
@@ -2053,6 +2132,7 @@
       enState.ready = false;
       enState.meta = null;
       enState.rows = null;
+      enState.payee = null;
       enState.labels = null;
       enState.fixed = null;
       enState.untranslatedFields = [];

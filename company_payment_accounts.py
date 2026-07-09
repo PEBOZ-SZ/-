@@ -24,6 +24,28 @@ _FOREIGN_CURRENCIES = frozenset(
 )
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
+_REQUIRED_FOREIGN_ACCOUNTS: tuple[dict[str, str], ...] = (
+    {
+        "account_id": "peboz_usd_boc_baoan",
+        "display_label_cn": "PEBOZ 美元账户",
+        "company_name": "SHENZHEN PEBOZ PRODUCTS LIMITED",
+        "company_name_en": "SHENZHEN PEBOZ PRODUCTS LIMITED",
+        "currency": "USD",
+        "account_type": ACCOUNT_TYPE_FOREIGN,
+        "account_variant": "usd",
+        "bank_name": "",
+        "bank_name_en": "BANK OF CHINA, BAOAN SUB-BRANCH, SHENZHEN",
+        "bank_account": "7419 7587 9516",
+        "swift_code": "BKCHCNBJ45A",
+        "bank_address_en": (
+            "1/F BLOCK 1, WANJUN COMMERCLAL BLDG, BAOXING ROAD WEST, "
+            "BAOAN DISTRICT SHENZHEN, CHINA"
+        ),
+        "bank_note_en": "*** please note that all remitter bank charges are on buyer's account",
+        "alipay": "",
+    },
+)
+
 
 def normalize_company_name(name: Any) -> str:
     """去除前后空格并去掉所有空白字符，便于精确/模糊匹配。"""
@@ -86,9 +108,28 @@ def list_company_payment_accounts() -> list[dict[str, str]]:
     payload = _load_payload()
     rows = payload.get("accounts")
     if not isinstance(rows, list):
-        return []
+        rows = []
+    merged_rows = list(rows)
+    existing_ids = {
+        str(row.get("account_id") or "").strip()
+        for row in merged_rows
+        if isinstance(row, dict)
+    }
+    existing_names = {
+        normalize_company_name(row.get("company_name_en") or row.get("company_name"))
+        for row in merged_rows
+        if isinstance(row, dict)
+    }
+    for required in _REQUIRED_FOREIGN_ACCOUNTS:
+        required_id = str(required.get("account_id") or "").strip()
+        required_name = normalize_company_name(
+            required.get("company_name_en") or required.get("company_name")
+        )
+        if required_id in existing_ids or required_name in existing_names:
+            continue
+        merged_rows.append(dict(required))
     out: list[dict[str, str]] = []
-    for row in rows:
+    for row in merged_rows:
         if not isinstance(row, dict):
             continue
         company_name = str(row.get("company_name") or "").strip()
