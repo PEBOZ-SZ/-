@@ -402,9 +402,23 @@
     return QUOTE_ISSUER_COMPANY_NAME;
   }
 
+  function quoteIssuerCompanyNameForCurrentLang() {
+    if (currentPdfLang === "en") {
+      return String(enState.fixed?.default_company_name || EN_FIXED_FALLBACK.default_company_name);
+    }
+    return QUOTE_ISSUER_COMPANY_NAME;
+  }
+
+  function footerCompanyNameForCurrentLang() {
+    if (currentPdfLang === "en") {
+      return String(enState.fixed?.default_company_name || EN_FIXED_FALLBACK.default_company_name);
+    }
+    return QUOTE_ISSUER_COMPANY_NAME;
+  }
+
   function syncQuoteIssuerCompanyNameForPdf() {
-    setText("pvCoTitle", QUOTE_ISSUER_COMPANY_NAME);
-    setText("pvFooterCo", QUOTE_ISSUER_COMPANY_NAME);
+    setText("pvCoTitle", quoteIssuerCompanyNameForCurrentLang());
+    setText("pvFooterCo", footerCompanyNameForCurrentLang());
   }
 
   function resolveAuthorizedPayeeCompanyForPdf() {
@@ -767,6 +781,49 @@
     });
     return Boolean(exact || isForeignPayeeAccount(currentPayeeAccountForPdf()));
   }
+
+  const EN_LABEL_FALLBACK = {
+    pvPdfDocTitle: "Quotation",
+    lbl_meta_phone: "Tel:",
+    lbl_meta_quote_no: "Quote No.:",
+    lbl_meta_contact_seller: "Contact:",
+    lbl_meta_email: "E-mail:",
+    lbl_meta_address: "Address:",
+    lbl_meta_customer: "Customer:",
+    lbl_meta_cust_contact: "Customer Contact:",
+    lbl_meta_cust_phone: "Customer Tel:",
+    lbl_meta_cust_company_addr: "Company Address:",
+    lbl_meta_quote_date: "Quote Date:",
+    lbl_meta_sample_status: "Sample:",
+    lbl_meta_sample_fee: "Sample Fee:",
+    lbl_meta_sample_lead_time: "Sample Lead Time:",
+    lbl_meta_authorized_payee: "Authorized Payee:",
+    lbl_sample_status_no: "Not required",
+    lbl_sample_status_pending: "To be confirmed",
+    th_style_image: "Style Image",
+    th_item_name: "Item",
+    th_size: "Size",
+    th_description: "Description",
+    th_packing: "Packaging",
+    th_qty_pcs: "Qty (PCS)",
+    th_unit_price_rmb: "Unit Price",
+    th_line_total_rmb: "Total Amount",
+    th_fob_unit_usd: "FOB Unit Price<br />(USD)",
+    th_fob_total_usd: "FOB Total<br />(USD)",
+    th_remarks: "Remarks",
+    th_tax_inclusive_price: "Tax-incl. Price",
+    th_fob_price_usd: "FOB Price<br />(USD)",
+    lbl_meta_pdf_remark: "Remark:",
+    lbl_customer_signature: "Customer Signature:",
+    foot_validity: "*The quotation is valid for 20 days. Final pricing is subject to prototyping and reconciliation.",
+    foot_bank_prefix: "Bank:",
+    foot_bank_account_prefix: "Bank Account:",
+    foot_alipay_prefix: "Alipay:",
+  };
+
+  const EN_FIXED_FALLBACK = {
+    default_company_name: "Shenzhen Baibo Travel Products Co., Ltd.",
+  };
 
   const enState = {
     ready: false,
@@ -1475,14 +1532,15 @@
     if (!thP || !thT) {
       return;
     }
+    const labels = labelsForLang(lang);
 
-    if (lang === "en" && enState.labels) {
+    if (lang === "en") {
       if (fobUsdMode) {
-        thP.innerHTML = String(enState.labels.th_fob_unit_usd || "FOB Unit Price<br />(USD)");
-        thT.innerHTML = String(enState.labels.th_fob_total_usd || "FOB Total<br />(USD)");
+        thP.innerHTML = String(labels.th_fob_unit_usd || "FOB Unit Price<br />(USD)");
+        thT.innerHTML = String(labels.th_fob_total_usd || "FOB Total<br />(USD)");
       } else {
-        thP.innerHTML = String(enState.labels.th_unit_price_rmb || "Unit Price");
-        thT.innerHTML = String(enState.labels.th_line_total_rmb || "Total EXW<br />RMB");
+        thP.innerHTML = String(labels.th_unit_price_rmb || "Unit Price");
+        thT.innerHTML = String(labels.th_line_total_rmb || "Total Amount");
       }
     } else if (fobUsdMode) {
       thP.innerHTML = "FOB单价<br />(USD)";
@@ -1499,11 +1557,12 @@
     if (!th) {
       return;
     }
-    if (lang === "en" && enState.labels) {
+    const labels = labelsForLang(lang);
+    if (lang === "en") {
       if (fobUsdMode) {
-        th.innerHTML = String(enState.labels.th_fob_price_usd || "FOB Price<br />(USD)");
+        th.innerHTML = String(labels.th_fob_price_usd || "FOB Price<br />(USD)");
       } else {
-        th.textContent = String(enState.labels.th_tax_inclusive_price || "Tax-incl. Price");
+        th.textContent = String(labels.th_tax_inclusive_price || "Tax-incl. Price");
       }
       return;
     }
@@ -2151,8 +2210,19 @@
     return requestTranslateEnglish();
   }
 
+  function labelsForLang(lang) {
+    if (lang !== "en") {
+      return {};
+    }
+    return {
+      ...EN_LABEL_FALLBACK,
+      ...(enState.labels || {}),
+    };
+  }
+
   function applyLabelsForLang(lang) {
-    const useEn = lang === "en" && enState.labels;
+    const labels = labelsForLang(lang);
+    const useEn = lang === "en";
     const pdfRoot = el("quotePdfRoot");
     if (pdfRoot) {
       pdfRoot.setAttribute("data-pdf-lang", lang === "en" ? "en" : "cn");
@@ -2166,8 +2236,8 @@
       if (!zh) {
         node.setAttribute("data-pdf-zh", node.innerHTML);
       }
-      if (useEn && Object.prototype.hasOwnProperty.call(enState.labels, key)) {
-        node.innerHTML = String(enState.labels[key] ?? "");
+      if (useEn && Object.prototype.hasOwnProperty.call(labels, key)) {
+        node.innerHTML = String(labels[key] ?? "");
       } else {
         node.innerHTML = node.getAttribute("data-pdf-zh") || "";
       }

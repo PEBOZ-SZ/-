@@ -2791,7 +2791,7 @@ thead th {
 
 .qs-pdf-root {
   --qs-pdf-footer-inset: 6px;
-  --qs-pdf-signature-offset: 42mm;
+  --qs-pdf-signature-offset: 64mm;
   width: 210mm;
   max-width: 210mm;
   min-height: 0;
@@ -3034,6 +3034,24 @@ thead th {
   vertical-align: middle;
   word-break: normal;
   overflow-wrap: break-word;
+}
+
+.qs-pdf-table tbody td.col-name {
+  white-space: normal;
+  line-height: 1.25;
+  font-size: 9pt;
+  overflow: visible;
+  padding: 5px 3px;
+  vertical-align: middle;
+  word-break: normal;
+  overflow-wrap: break-word;
+  hyphens: auto;
+}
+
+.qs-pdf-root[data-pdf-lang="en"] .qs-pdf-table tbody td.col-name {
+  word-break: normal;
+  overflow-wrap: break-word;
+  hyphens: auto;
 }
 
 .qs-pdf-table tbody td.col-desc {
@@ -3510,7 +3528,7 @@ thead th {
 }
 
 .qs-pdf-root[data-pdf-lang="en"] .qs-pdf-stamp-side {
-  margin-top: 18px;
+  margin-top: var(--qs-pdf-signature-offset);
 }
 
 .qs-pdf-root[data-pdf-lang="en"] .qs-pdf-pay-wrap {
@@ -3532,7 +3550,7 @@ thead th {
   align-self: start;
   width: auto;
   min-width: 52mm;
-  margin-top: 35mm;
+  margin-top: calc(var(--qs-pdf-signature-offset) + 29mm);
   display: block;
   white-space: nowrap;
 }
@@ -3655,6 +3673,7 @@ thead th {
   }
 
   #quotePdfRoot .qs-pdf-table tbody td.col-size,
+  #quotePdfRoot .qs-pdf-table tbody td.col-name,
   #quotePdfRoot .qs-pdf-table tbody td.col-pack,
   #quotePdfRoot .qs-pdf-table tbody td.col-desc {
     white-space: normal !important;
