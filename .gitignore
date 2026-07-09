@@ -80,6 +80,13 @@ quote_storage/
 !quote_storage/*.py
 quote_storage/__pycache__/
 
+# Deploy the official read-only material price knowledge base.
+!data/
+data/*
+!data/knowledge_base/
+data/knowledge_base/*
+!data/knowledge_base/栢博材料询价登记表_三列_含本批追加.xlsx
+
 # Editor / OS
 .idea/
 .vscode/

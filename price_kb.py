@@ -81,6 +81,7 @@ _TRAILING_BRAND_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _TOKENIZE_PATTERN = re.compile(r"[A-Za-z]+|\d+(?:\.\d+)?|[一-鿿]")
+_CJK_SEQUENCE_PATTERN = re.compile(r"[\u4e00-\u9fff]{2,}")
 _PRICE_NUMERIC_PATTERN = re.compile(r"-?\d+(?:\.\d+)?")
 _PRICE_UNIT_PATTERN = re.compile(
     r"(?:元?\s*/\s*)(码²|码|个|套|件|条|米|m|y|pcs|pc|pair|set|hset|kg|g|箱)",
@@ -406,6 +407,16 @@ def _tokens_from_text(text: str) -> set[str]:
             # 12-digit material codes don't help fuzzy matching by themselves
             continue
         tokens.add(raw)
+    for seq in _CJK_SEQUENCE_PATTERN.findall(text):
+        if seq in NAME_STOP_TOKENS:
+            continue
+        tokens.add(seq)
+        max_len = min(4, len(seq))
+        for size in range(2, max_len + 1):
+            for start in range(0, len(seq) - size + 1):
+                part = seq[start : start + size]
+                if part not in NAME_STOP_TOKENS:
+                    tokens.add(part)
     return tokens
 
 
