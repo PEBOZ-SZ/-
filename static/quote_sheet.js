@@ -23,6 +23,7 @@
   const PAYEE_SELECT_REQUIRED_MSG = "请选择一个收款公司";
   const PAYEE_CANDIDATE_EMPTY_MSG = "未找到匹配收款公司";
   const PAYEE_LIST_LIMIT = 30;
+  const DEFAULT_PAYEE_ACCOUNT_TYPE = "cn";
 
   const payeeState = {
     selected: null,
@@ -294,7 +295,7 @@
       autoSelectUnique = true,
       showDropdown = true,
       silent = false,
-      accountType = "",
+      accountType = DEFAULT_PAYEE_ACCOUNT_TYPE,
     } = options;
     const text = String(query || "").trim();
     const accountTypeParam = String(accountType || "").trim().toLowerCase();

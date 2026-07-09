@@ -12,3 +12,11 @@ def test_quote_sheet_frontend_preserves_foreign_payee_fields() -> None:
     assert "buildBankBlockPdfText" in source
     assert "payee," in source
     assert "selected_bank_account_type" in source
+
+
+def test_quote_sheet_default_payee_picker_uses_cn_accounts_only() -> None:
+    source = Path("static/quote_sheet.js").read_text(encoding="utf-8")
+
+    assert 'DEFAULT_PAYEE_ACCOUNT_TYPE = "cn"' in source
+    assert "accountType = DEFAULT_PAYEE_ACCOUNT_TYPE" in source
+    assert 'accountType: "foreign"' in source
