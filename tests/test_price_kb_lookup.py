@@ -45,3 +45,15 @@ def test_chinese_material_words_are_tokenized_for_lookup():
     assert "600" in tokens
     assert "牛津布" in tokens
     assert "牛津" in tokens
+
+
+def test_official_kb_600d_oxford_price_is_8_per_yard():
+    from price_kb import reset_price_kb, get_price_kb
+
+    reset_price_kb()
+    hit = get_price_kb().lookup("600D牛津布", "600D", min_score=0.1)
+
+    assert hit is not None
+    assert hit.entry.raw_name == "600D牛津布"
+    assert hit.entry.raw_price == "8元/码"
+    assert hit.entry.unit_price_value == 8
