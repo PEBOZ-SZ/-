@@ -24,9 +24,11 @@
   const PAYEE_CANDIDATE_EMPTY_MSG = "未找到匹配收款公司";
   const PAYEE_LIST_LIMIT = 30;
   const DEFAULT_PAYEE_ACCOUNT_TYPE = "cn";
+  const PAYEE_ACCOUNT_TYPES = new Set(["cn", "foreign"]);
 
   const payeeState = {
     selected: null,
+    accountType: DEFAULT_PAYEE_ACCOUNT_TYPE,
     searching: false,
     searchToken: 0,
     candidates: [],
@@ -99,6 +101,55 @@
     if (addr) lines.push(`ADD: ${addr}`);
     if (note) lines.push(note);
     return lines.join("\n");
+  }
+
+  function normalizePayeeAccountType(raw) {
+    const value = String(raw || "").trim().toLowerCase();
+    return PAYEE_ACCOUNT_TYPES.has(value) ? value : DEFAULT_PAYEE_ACCOUNT_TYPE;
+  }
+
+  function currentPayeeAccountType() {
+    return normalizePayeeAccountType(payeeState.accountType);
+  }
+
+  function syncPayeeAccountTypeButtons() {
+    const activeType = currentPayeeAccountType();
+    document.querySelectorAll("[data-payee-account-type]").forEach((node) => {
+      const isActive = normalizePayeeAccountType(node.getAttribute("data-payee-account-type")) === activeType;
+      node.classList.toggle("is-active", isActive);
+      node.setAttribute("aria-pressed", isActive ? "true" : "false");
+    });
+    const input = el("qsPayeeCompany");
+    if (input) {
+      input.placeholder = activeType === "foreign" ? "搜索或选择海外收款账户" : "搜索或选择中国收款账户";
+    }
+  }
+
+  function setPayeeAccountType(rawType, options = {}) {
+    const nextType = normalizePayeeAccountType(rawType);
+    const changed = nextType !== currentPayeeAccountType();
+    payeeState.accountType = nextType;
+    syncPayeeAccountTypeButtons();
+    if (changed) {
+      const input = el("qsPayeeCompany");
+      if (input) {
+        input.value = "";
+      }
+      clearPayeeSelection();
+      renderPayeeCandidates([], { showEmpty: false });
+      setPayeeDropdownOpen(false);
+      setPayeeStatus("");
+    }
+    if (options.reload) {
+      const query = el("qsPayeeCompany")?.value ?? "";
+      void fetchPayeeAccounts(query, {
+        autoSelectExact: false,
+        autoSelectUnique: false,
+        showDropdown: true,
+        silent: true,
+        accountType: nextType,
+      });
+    }
   }
 
   function setPayeeStatus(text, level = STATUS_LEVELS.idle) {
@@ -295,7 +346,7 @@
       autoSelectUnique = true,
       showDropdown = true,
       silent = false,
-      accountType = DEFAULT_PAYEE_ACCOUNT_TYPE,
+      accountType = currentPayeeAccountType(),
     } = options;
     const text = String(query || "").trim();
     const accountTypeParam = String(accountType || "").trim().toLowerCase();
@@ -749,6 +800,15 @@
         return;
       }
       setPayeeDropdownOpen(false);
+    });
+  }
+
+  function bindPayeeAccountTypeSwitcher() {
+    syncPayeeAccountTypeButtons();
+    document.querySelectorAll("[data-payee-account-type]").forEach((node) => {
+      node.addEventListener("click", () => {
+        setPayeeAccountType(node.getAttribute("data-payee-account-type"), { reload: true });
+      });
     });
   }
 
@@ -2157,7 +2217,6 @@
     updateTranslateStatus("正在翻译英文内容...", STATUS_LEVELS.busy);
 
     try {
-      await ensureForeignPayeeForEnglishExport();
       const resp = await window.fetch("/api/quote-sheet/translate-en", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2993,6 +3052,7 @@
     applyDefaultsToForm();
     applyLabelsForLang("cn");
     bindStaticFields();
+    bindPayeeAccountTypeSwitcher();
     bindPayeeCompanyField();
     updateSampleFieldsUi();
     const tbody = selFormBody();

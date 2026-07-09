@@ -250,31 +250,51 @@
                 <fieldset class="qs-fieldset">
                   <legend>收款信息</legend>
                   <div class="qs-payee-wrap">
-                    <label class="qs-label qs-payee-label"
-                      >收款公司
-                      <div class="qs-payee-combobox">
-                        <input
-                          type="text"
-                          id="qsPayeeCompany"
-                          class="qs-input qs-payee-combobox-input"
-                          autocomplete="off"
-                          role="combobox"
-                          aria-expanded="false"
-                          aria-controls="qsPayeeCandidates"
-                          aria-autocomplete="list"
-                          placeholder="搜索或选择收款公司"
-                        />
+                    <div class="qs-payee-head">
+                      <label for="qsPayeeCompany" class="qs-payee-title">收款公司</label>
+                      <div class="qs-payee-type-toggle" role="group" aria-label="收款账户类型">
                         <button
                           type="button"
-                          id="qsPayeeToggle"
-                          class="qs-payee-combobox-toggle"
-                          aria-label="展开收款公司列表"
-                          tabindex="-1"
+                          id="qsPayeeTypeCn"
+                          class="qs-payee-type-btn is-active"
+                          data-payee-account-type="cn"
+                          aria-pressed="true"
                         >
-                          <span class="qs-payee-combobox-chevron" aria-hidden="true"></span>
+                          中国账户
+                        </button>
+                        <button
+                          type="button"
+                          id="qsPayeeTypeForeign"
+                          class="qs-payee-type-btn"
+                          data-payee-account-type="foreign"
+                          aria-pressed="false"
+                        >
+                          海外账户
                         </button>
                       </div>
-                    </label>
+                    </div>
+                    <div class="qs-payee-combobox">
+                      <input
+                        type="text"
+                        id="qsPayeeCompany"
+                        class="qs-input qs-payee-combobox-input"
+                        autocomplete="off"
+                        role="combobox"
+                        aria-expanded="false"
+                        aria-controls="qsPayeeCandidates"
+                        aria-autocomplete="list"
+                        placeholder="搜索或选择收款公司"
+                      />
+                      <button
+                        type="button"
+                        id="qsPayeeToggle"
+                        class="qs-payee-combobox-toggle"
+                        aria-label="展开收款公司列表"
+                        tabindex="-1"
+                      >
+                        <span class="qs-payee-combobox-chevron" aria-hidden="true"></span>
+                      </button>
+                    </div>
                     <ul
                       id="qsPayeeCandidates"
                       class="qs-payee-candidates"

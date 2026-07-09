@@ -2250,8 +2250,51 @@ thead th {
   position: relative;
 }
 
-.qs-payee-label {
-  display: block;
+.qs-payee-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.qs-payee-title {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.qs-payee-type-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8faf9;
+}
+
+.qs-payee-type-btn {
+  min-width: 82px;
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #526071;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.qs-payee-type-btn:hover,
+.qs-payee-type-btn:focus-visible {
+  color: #0f6f52;
+  outline: none;
+}
+
+.qs-payee-type-btn.is-active {
+  background: #11815f;
+  color: #f8fffc;
+  box-shadow: 0 6px 14px rgba(17, 129, 95, 0.18);
 }
 
 .qs-payee-combobox {
@@ -2259,6 +2302,21 @@ thead th {
   display: flex;
   align-items: stretch;
   margin-top: 4px;
+}
+
+@media (max-width: 720px) {
+  .qs-payee-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .qs-payee-type-toggle {
+    width: 100%;
+  }
+
+  .qs-payee-type-btn {
+    flex: 1;
+  }
 }
 
 .qs-payee-combobox-input {
