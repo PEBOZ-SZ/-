@@ -45,3 +45,15 @@ def test_english_translation_does_not_force_foreign_payee_selection() -> None:
     translate_body = source[translate_start:translate_end]
 
     assert "ensureForeignPayeeForEnglishExport" not in translate_body
+
+
+def test_english_pdf_uses_fixed_peboz_usd_bank_information() -> None:
+    source = Path("static/quote_sheet.js").read_text(encoding="utf-8")
+
+    assert "PEBOZ_USD_PAYEE_FOR_ENGLISH_PDF" in source
+    assert "SHENZHEN PEBOZ PRODUCTS LIMITED" in source
+    assert "7419 7587 9516" in source
+    assert "BANK OF CHINA , BAOAN SUB-BRANCH, SHENZHEN" in source
+    assert "BKCHCNBJ45A" in source
+    assert "all remitter bank charges are on buyer's account" in source
+    assert "payeeAccountForCurrentPdfLang" in source

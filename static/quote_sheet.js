@@ -25,6 +25,20 @@
   const PAYEE_LIST_LIMIT = 30;
   const DEFAULT_PAYEE_ACCOUNT_TYPE = "cn";
   const PAYEE_ACCOUNT_TYPES = new Set(["cn", "foreign"]);
+  const PEBOZ_USD_PAYEE_FOR_ENGLISH_PDF = {
+    company_name: "SHENZHEN PEBOZ PRODUCTS LIMITED",
+    company_name_en: "SHENZHEN PEBOZ PRODUCTS LIMITED",
+    account_type: "foreign",
+    currency: "USD",
+    bank_name: "",
+    bank_name_en: "BANK OF CHINA , BAOAN SUB-BRANCH, SHENZHEN",
+    bank_account: "7419 7587 9516",
+    swift_code: "BKCHCNBJ45A",
+    bank_address_en:
+      "1/F BLOCK 1, WANJUN COMMERCLAL BLDG, BAOXING ROAD WEST, BAOAN DISTRICT SHENZHEN, CHINA",
+    bank_note_en: "*** please note that all remitter bank charges are on buyer's account",
+    alipay: "",
+  };
 
   const payeeState = {
     selected: null,
@@ -446,6 +460,13 @@
     return payeeState.selected;
   }
 
+  function payeeAccountForCurrentPdfLang() {
+    if (currentPdfLang === "en") {
+      return PEBOZ_USD_PAYEE_FOR_ENGLISH_PDF;
+    }
+    return currentPayeeAccountForPdf();
+  }
+
   function resolveQuoteCompanyNameForPdf() {
     return QUOTE_ISSUER_COMPANY_NAME;
   }
@@ -474,7 +495,7 @@
   }
 
   function resolveAuthorizedPayeeCompanyForPdf() {
-    const payee = currentPayeeAccountForPdf();
+    const payee = payeeAccountForCurrentPdfLang();
     const fromSelected = String(payee?.company_name || "").trim();
     if (fromSelected) {
       return fromSelected;
@@ -1896,7 +1917,7 @@
     syncPdfBottomRemark(currentPdfLang);
     syncPdfValidityRemark();
 
-    const payeeAccount = currentPdfLang === "en" && enState.payee ? enState.payee : currentPayeeAccountForPdf();
+    const payeeAccount = payeeAccountForCurrentPdfLang();
     const bankBlockText = buildBankBlockPdfText(payeeAccount);
     const bankNameText = bankBlockText || buildBankNamePdfText(payeeAccount);
     const bankAccountText = bankBlockText ? "" : buildBankAccountPdfText(payeeAccount);
