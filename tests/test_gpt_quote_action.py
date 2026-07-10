@@ -116,6 +116,27 @@ class GptQuoteActionTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["type"], "error")
 
+    def test_gpt_quote_agent_can_lookup_material_price_from_kb(self) -> None:
+        import server
+        from price_kb import reset_price_kb
+
+        reset_price_kb()
+        with patch.dict("os.environ", {"GPT_ACTION_TOKEN": "secret"}, clear=False):
+            status, result = server.handle_gpt_quote_agent_request(
+                {
+                    "session_id": "sess-price-lookup",
+                    "message": "请调用后台知识库查询 600D牛津布 的价格，不能AI暂估。",
+                },
+                "Bearer secret",
+            )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["type"], "price_lookup")
+        self.assertIn("8元/码", result["assistant_message"])
+        self.assertEqual(result["price_lookup"]["hits"][0]["name"], "600D牛津布")
+        self.assertEqual(result["price_lookup"]["hits"][0]["unit_price_value"], 8)
+
     def test_gpt_quote_agent_http_endpoint_checks_token(self) -> None:
         import server
 

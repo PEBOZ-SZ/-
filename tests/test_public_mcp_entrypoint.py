@@ -23,6 +23,25 @@ def test_public_mcp_exposes_quote_sheet_payment_account_helpers() -> None:
     assert "candidates" in result
 
 
+def test_public_mcp_exposes_readonly_price_lookup_for_gpt() -> None:
+    import mcp_server.public_mcp as public_mcp
+    from price_kb import reset_price_kb
+
+    reset_price_kb()
+    assert "price_lookup" in public_mcp.PUBLIC_TOOL_REGISTRY
+
+    result = public_mcp.PUBLIC_TOOL_REGISTRY["price_lookup"](
+        {"query": {"name": "600D牛津布", "spec": "600D", "limit": 3, "min_score": 0.1}}
+    )
+
+    assert result["ok"] is True
+    hits = result["result"]["hits"]
+    assert hits
+    assert hits[0]["name"] == "600D牛津布"
+    assert hits[0]["price"] == "8元/码"
+    assert hits[0]["unit_price_value"] == 8
+
+
 def test_public_mcp_serves_quote_sheet_translate_en_as_json() -> None:
     import mcp_server.public_mcp as public_mcp
 

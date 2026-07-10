@@ -76,6 +76,7 @@ from mcp_server.tools.quote_archive import quote_archive as _quote_archive
 from mcp_server.tools.quote_get_detail import quote_get_detail as _quote_get_detail
 from mcp_server.tools.quote_get_history import quote_get_history as _quote_get_history
 from mcp_server.tools.quote_sheet_preview import quote_sheet_preview as _quote_sheet_preview
+from mcp_server.tools.price_lookup import price_lookup as _price_lookup
 from quote_sheet_export_validate import validate_quote_sheet_export_payload
 from quote_sheet_i18n import (
     get_quote_sheet_terms_public,
@@ -170,6 +171,7 @@ PUBLIC_TOOL_REGISTRY: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "quote_get_detail": _quote_get_detail,
     "quote_sheet_preview": _quote_sheet_preview,
     "quote_approval_status": _quote_approval_status,
+    "price_lookup": _price_lookup,
 }
 
 
@@ -214,6 +216,27 @@ def _ensure_input(input_data: dict[str, Any] | None) -> dict[str, Any]:
 
 def _call_public_tool(tool_name: str, input_data: dict[str, Any] | None) -> dict[str, Any]:
     return PUBLIC_TOOL_REGISTRY[tool_name](_ensure_input(input_data))
+
+
+def _public_price_lookup_input(input_data: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(_ensure_input(input_data))
+    user_context = payload.get("user_context")
+    if not isinstance(user_context, dict) or not str(user_context.get("role") or "").strip():
+        payload["user_context"] = {
+            "role": "sales",
+            "user_id": "gpt_action",
+            "user_name": "gpt_action",
+            "sales_user_id": "gpt_action",
+            "sales_user_name": "gpt_action",
+        }
+    return payload
+
+
+def _call_public_price_lookup(input_data: dict[str, Any] | None) -> dict[str, Any]:
+    return _price_lookup(_public_price_lookup_input(input_data))
+
+
+PUBLIC_TOOL_REGISTRY["price_lookup"] = _call_public_price_lookup
 
 
 def _load_public_quote_sheet_prefill_for_route(token: str) -> dict[str, Any]:
@@ -546,6 +569,11 @@ def quote_sheet_preview(input_data: dict[str, Any] | None = None) -> dict[str, A
 @mcp.tool(description="Readonly approval status and admin feedback summary for a saved quote.")
 def quote_approval_status(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
     return _call_public_tool("quote_approval_status", input_data)
+
+
+@mcp.tool(description="Readonly material price lookup from the official material knowledge base.")
+def price_lookup(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _call_public_price_lookup(input_data)
 
 
 def main() -> None:

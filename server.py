@@ -96,6 +96,75 @@ def _quote_agent_recalculate(session_id: str, draft: dict[str, Any], request_pay
     return quote_result, updated
 
 
+def _quote_agent_price_lookup_query(message: str) -> dict[str, str] | None:
+    text = re.sub(r"\s+", "", str(message or "").strip())
+    if not text:
+        return None
+    wants_price = any(word in text for word in ("知识库", "价格", "单价", "多少钱", "查价"))
+    if not wants_price:
+        return None
+    quote_change_words = ("如果", "利润", "总成本", "成本", "重新算", "改成", "换成", "用量", "涨到", "降到", "按")
+    if "知识库" not in text and any(word in text for word in quote_change_words):
+        return None
+
+    candidate = text
+    for sep in ("查询", "查一下", "查", "看看"):
+        if sep in candidate:
+            candidate = candidate.split(sep)[-1]
+    candidate = re.split(r"(?:的)?(?:价格|单价|多少钱|查价)", candidate, maxsplit=1)[0]
+    for noise in ("请", "调用", "后台", "知识库", "材料", "不能AI暂估", "不能暂估", "来源", "必须"):
+        candidate = candidate.replace(noise, "")
+    candidate = re.sub(r"[，。！？、:：；;,.!?()\[\]{}<>《》\"'“”‘’]", "", candidate).strip()
+    if len(candidate) < 2:
+        return None
+    spec_match = re.search(r"\d+(?:\.\d+)?\s*(?:D|#|MM|CM|M|码|米|寸)", candidate, re.IGNORECASE)
+    return {"name": candidate[:80], "spec": spec_match.group(0) if spec_match else ""}
+
+
+def _quote_agent_price_lookup_response(message: str, draft: dict[str, Any]) -> dict[str, Any] | None:
+    query = _quote_agent_price_lookup_query(message)
+    if query is None:
+        return None
+    from price_kb import get_price_kb
+
+    hits = get_price_kb().lookup_ranked(query["name"], query.get("spec", ""), limit=5, min_score=0.1)
+    safe_hits: list[dict[str, Any]] = []
+    for hit in hits:
+        entry = hit.entry
+        safe_hits.append(
+            {
+                "name": entry.raw_name,
+                "spec": entry.raw_spec,
+                "price": entry.raw_price,
+                "unit_price_value": entry.unit_price_value,
+                "unit_price_unit": entry.unit_price_unit,
+                "score": hit.score,
+                "auto_learned": bool(entry.auto_learned),
+            }
+        )
+    if safe_hits:
+        top = safe_hits[0]
+        assistant_message = f"{top['name']}：{top['price']}，来源：知识库价格。"
+        if top.get("spec"):
+            assistant_message = f"{top['name']}（{top['spec']}）：{top['price']}，来源：知识库价格。"
+    else:
+        assistant_message = f"知识库暂时没有命中「{query['name']}」的价格，请补充更完整的材料名称或规格。"
+    return {
+        "ok": True,
+        "type": "price_lookup",
+        "assistant_message": assistant_message,
+        "draft": draft,
+        "quote_result": draft.get("source_quote_result") if isinstance(draft.get("source_quote_result"), dict) else {},
+        "missing_fields": draft.get("missing_fields") or [],
+        "risk_flags": draft.get("risk_flags") or [],
+        "price_lookup": {
+            "query": query,
+            "hits": safe_hits,
+            "hit_count": len(safe_hits),
+        },
+    }
+
+
 def handle_quote_agent_request(request: dict[str, Any]) -> dict[str, Any]:
     from quote_draft_patch import parse_quote_draft_patches
     from quote_draft_store import create_quote_draft, get_quote_draft, update_quote_draft
@@ -116,6 +185,10 @@ def handle_quote_agent_request(request: dict[str, Any]) -> dict[str, Any]:
         draft = create_quote_draft(session_id, source_payload=payload, quote_result=quote_result)
 
     message = str(request.get("message") or request.get("user_text") or "").strip()
+    price_lookup_response = _quote_agent_price_lookup_response(message, draft)
+    if price_lookup_response is not None:
+        return price_lookup_response
+
     parsed = parse_quote_draft_patches(message, draft)
     intent = parsed.get("intent")
 

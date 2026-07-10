@@ -27,6 +27,7 @@ class WeilaiPxjDeployContractTests(unittest.TestCase):
                 "quote_get_detail",
                 "quote_sheet_preview",
                 "quote_approval_status",
+                "price_lookup",
             },
         )
         forbidden = {

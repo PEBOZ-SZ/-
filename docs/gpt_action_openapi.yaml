@@ -450,6 +450,7 @@ components:
           enum:
             - quote_updated
             - clarify
+            - price_lookup
             - saved
             - error
         assistant_message:
