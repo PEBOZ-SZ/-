@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import importlib.util
+import re
 import sys
 import threading
 import types
@@ -237,6 +238,95 @@ def _call_public_price_lookup(input_data: dict[str, Any] | None) -> dict[str, An
 
 
 PUBLIC_TOOL_REGISTRY["price_lookup"] = _call_public_price_lookup
+
+
+def _string_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, dict):
+        out: list[str] = []
+        for item in value.values():
+            out.extend(_string_values(item))
+        return out
+    if isinstance(value, list):
+        out = []
+        for item in value:
+            out.extend(_string_values(item))
+        return out
+    return []
+
+
+def _looks_like_material_price_query(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text or "")
+    if not compact:
+        return False
+    price_intent = any(word in compact for word in ("知识库", "价格", "单价", "查价", "多少钱", "材料价"))
+    material_hint = bool(
+        re.search(r"\d+(?:\.\d+)?\s*(?:D|#|MM|CM|M|码|米|寸)", compact, re.IGNORECASE)
+        or any(word in compact for word in ("布", "PVC", "PU", "PEVA", "EPE", "拉链", "织带", "D扣", "五金", "纸箱", "胶袋"))
+    )
+    return material_hint and (price_intent or "历史" not in compact)
+
+
+def _material_query_from_legacy_history(input_data: dict[str, Any] | None) -> dict[str, Any] | None:
+    payload = _ensure_input(input_data)
+    query = payload.get("query") if isinstance(payload.get("query"), dict) else {}
+    if any(str(query.get(key) or "").strip() for key in ("quote_uid", "calc_quote_id", "quote_id", "version_id")):
+        return None
+
+    name = str(
+        query.get("name")
+        or query.get("material")
+        or query.get("material_name")
+        or query.get("keyword")
+        or payload.get("name")
+        or payload.get("material")
+        or payload.get("keyword")
+        or ""
+    ).strip()
+    spec = str(query.get("spec") or payload.get("spec") or "").strip()
+    text = " ".join(_string_values({"payload": payload, "query": query}))
+    candidate = name or text
+    if not _looks_like_material_price_query(candidate):
+        return None
+
+    material_match = re.search(
+        r"([A-Za-z0-9#.\-]*\d+(?:\.\d+)?\s*(?:D|#|MM|CM|M|码|米|寸)\s*[\u4e00-\u9fffA-Za-z0-9#.\-/]{0,24})",
+        candidate,
+        re.IGNORECASE,
+    )
+    if material_match:
+        name = material_match.group(1)
+    for sep in ("查询", "查一下", "查", "看看"):
+        if sep in name:
+            name = name.split(sep)[-1]
+    name = re.split(r"(?:的)?(?:价格|单价|多少钱|查价)", name, maxsplit=1)[0]
+    for stop in ("不能AI暂估", "不能暂估", "来源", "必须", "报价", "历史"):
+        if stop in name:
+            name = name.split(stop, 1)[0]
+    for noise in ("请", "调用", "后台", "知识库", "材料"):
+        name = name.replace(noise, "")
+    name = re.sub(r"[，。！？、:：；;,.!?()\[\]{}<>《》\"'“”‘’]", "", name).strip()
+    if not name:
+        return None
+    if not spec:
+        spec_match = re.search(r"\d+(?:\.\d+)?\s*(?:D|#|MM|CM|M|码|米|寸)", name, re.IGNORECASE)
+        spec = spec_match.group(0) if spec_match else ""
+    return {"query": {"name": name[:80], "spec": spec, "limit": 5, "min_score": 0.1}}
+
+
+def _call_public_quote_history(input_data: dict[str, Any] | None) -> dict[str, Any]:
+    price_query = _material_query_from_legacy_history(input_data)
+    if price_query is not None:
+        result = _call_public_price_lookup(price_query)
+        result["legacy_tool"] = "quote_history"
+        result["assistant_hint"] = "这是材料知识库价格查询结果，不是历史报价记录。"
+        return result
+    return _quote_get_history(_ensure_input(input_data))
+
+
+PUBLIC_TOOL_REGISTRY["quote_history"] = _call_public_quote_history
 
 
 def _load_public_quote_sheet_prefill_for_route(token: str) -> dict[str, Any]:

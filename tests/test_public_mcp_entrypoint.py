@@ -42,6 +42,25 @@ def test_public_mcp_exposes_readonly_price_lookup_for_gpt() -> None:
     assert hits[0]["unit_price_value"] == 8
 
 
+def test_public_mcp_legacy_quote_history_routes_material_price_query_to_kb() -> None:
+    import mcp_server.public_mcp as public_mcp
+    from price_kb import reset_price_kb
+
+    reset_price_kb()
+    result = public_mcp.quote_history(
+        {"query": {"keyword": "请查询知识库价格：600D牛津布，不能AI暂估"}}
+    )
+
+    assert result["ok"] is True
+    assert result["tool"] == "price_lookup"
+    assert result["legacy_tool"] == "quote_history"
+    assert "知识库价格" in result["assistant_hint"]
+    hits = result["result"]["hits"]
+    assert hits
+    assert hits[0]["name"] == "600D牛津布"
+    assert hits[0]["price"] == "8元/码"
+
+
 def test_public_mcp_serves_quote_sheet_translate_en_as_json() -> None:
     import mcp_server.public_mcp as public_mcp
 
