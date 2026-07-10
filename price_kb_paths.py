@@ -21,7 +21,9 @@ LEGACY_DROP_LOG_PATH = ROOT / "data" / "price_auto_drops.jsonl"
 def official_kb_path() -> Path:
     raw = os.environ.get("PRICE_KB_OFFICIAL_PATH", "").strip()
     if raw:
-        return Path(raw).expanduser().resolve()
+        configured = Path(raw).expanduser().resolve()
+        if configured.is_file():
+            return configured
     if REPO_OFFICIAL_KB_PATH.is_file():
         return REPO_OFFICIAL_KB_PATH.resolve()
     return LOCAL_OFFICIAL_KB_PATH.resolve()

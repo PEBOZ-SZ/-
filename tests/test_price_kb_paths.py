@@ -18,6 +18,16 @@ def test_official_kb_env_override_still_wins(monkeypatch, tmp_path) -> None:
     import price_kb_paths
 
     override = tmp_path / "custom.xlsx"
+    override.write_bytes(b"placeholder")
     monkeypatch.setenv("PRICE_KB_OFFICIAL_PATH", str(override))
 
     assert price_kb_paths.official_kb_path() == override.resolve()
+
+
+def test_official_kb_bad_env_path_falls_back_to_repo_workbook(monkeypatch, tmp_path) -> None:
+    import price_kb_paths
+
+    missing = tmp_path / "missing.xlsx"
+    monkeypatch.setenv("PRICE_KB_OFFICIAL_PATH", str(missing))
+
+    assert price_kb_paths.official_kb_path() == price_kb_paths.REPO_OFFICIAL_KB_PATH.resolve()
