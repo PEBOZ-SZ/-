@@ -8,7 +8,9 @@ ROOT = Path(__file__).resolve().parent
 
 # 正式价格知识库（只读用于报价；人工/审批写入需显式放行）
 OFFICIAL_KB_FILENAME = "栢博材料询价登记表_三列_含本批追加.xlsx"
-OFFICIAL_KB_PATH_DEFAULT = Path(f"D:/知识库/{OFFICIAL_KB_FILENAME}")
+REPO_OFFICIAL_KB_PATH = ROOT / "data" / "knowledge_base" / OFFICIAL_KB_FILENAME
+LOCAL_OFFICIAL_KB_PATH = Path(f"D:/知识库/{OFFICIAL_KB_FILENAME}")
+OFFICIAL_KB_PATH_DEFAULT = REPO_OFFICIAL_KB_PATH
 
 # 项目内遗留副本，不再作为正式数据源
 LEGACY_PROJECT_KB_PATH = ROOT / "data" / "price_kb.xlsx"
@@ -20,7 +22,9 @@ def official_kb_path() -> Path:
     raw = os.environ.get("PRICE_KB_OFFICIAL_PATH", "").strip()
     if raw:
         return Path(raw).expanduser().resolve()
-    return OFFICIAL_KB_PATH_DEFAULT.resolve()
+    if REPO_OFFICIAL_KB_PATH.is_file():
+        return REPO_OFFICIAL_KB_PATH.resolve()
+    return LOCAL_OFFICIAL_KB_PATH.resolve()
 
 
 def review_data_dir() -> Path:
