@@ -157,6 +157,9 @@ class McpQuoteSheetPreviewTests(unittest.TestCase):
         self.assertEqual(preview["approval_status"], "pending")
         self.assertIn("view=quoteSheet", preview["preview_url"])
         self.assertIn("quote_uid=preview-series", preview["preview_url"])
+        self.assertIn("view=quoteSheet", preview["download_url"])
+        self.assertIn("quote_uid=preview-series", preview["download_url"])
+        self.assertIn("exportMode=pdf_rmb", preview["download_url"])
         self.assertTrue(preview["prefill_available"])
         summary = preview["prefill_summary"]
         self.assertEqual(summary["customer_name"], "Preview Customer")

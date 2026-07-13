@@ -175,7 +175,14 @@ def quote_get_detail(input_data: dict[str, Any] | None = None) -> dict[str, Any]
     return _call_existing_tool("quote_get_detail", input_data)
 
 
-@mcp.tool(description="Build a saved quote sheet preview URL and controlled prefill summary.")
+@mcp.tool(
+    description=(
+        "Build the original system quote-sheet preview/download URL from GPT-prepared product rows "
+        "or a saved quote record. Use this for quote-sheet preview or export. If it fails, report the "
+        "failure and retry or ask the user to save first; never create a local Excel, PDF, HTML, or "
+        "spreadsheet preview as a replacement."
+    )
+)
 def quote_sheet_preview(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
     return _call_existing_tool("quote_sheet_preview", input_data)
 
