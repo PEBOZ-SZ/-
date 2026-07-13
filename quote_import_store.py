@@ -276,6 +276,7 @@ def import_quote_payload(
     )
     saved = quote_upload_storage.resolve_quote_version_target(quote_uid, calc_quote_id=calc_quote_id) or {}
     preview_url = "/?" + urlencode({"view": "quoteSheet", "quote_uid": quote_uid})
+    download_url = f"{preview_url}&exportMode=pdf_rmb"
     return {
         "success": True,
         "quote_id": calc_quote_id,
@@ -284,4 +285,5 @@ def import_quote_payload(
         "version_id": saved.get("id"),
         "version_no": saved.get("version_no"),
         "preview_url": preview_url,
+        "download_url": download_url,
     }

@@ -315,6 +315,8 @@ def quote_sheet_preview(input_data: dict) -> dict:
             raise PermissionError(SAFE_NOT_FOUND)
 
         include_prefill = query["mode"] == "prefill" or bool(query["include_prefill"])
+        preview_path = f"/?view=quoteSheet&quote_uid={quote(quote_uid)}"
+        download_path = f"{preview_path}&exportMode=pdf_rmb"
         result = {
             "quote_uid": quote_uid,
             "calc_quote_id": str(detail.get("calc_quote_id") or ""),
@@ -322,7 +324,8 @@ def quote_sheet_preview(input_data: dict) -> dict:
             "version_no": detail.get("version_no"),
             "product_name": str(detail.get("product_name") or prefill.get("product_name") or ""),
             "approval_status": str(detail.get("approval_status") or "pending"),
-            "preview_url": f"/?view=quoteSheet&quote_uid={quote(quote_uid)}",
+            "preview_url": _absolute_or_relative_url(preview_path),
+            "download_url": _absolute_or_relative_url(download_path),
             "prefill_available": True,
             "prefill_summary": _prefill_summary(prefill),
         }

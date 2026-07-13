@@ -1,11 +1,11 @@
-﻿# Custom GPT Action Setup
+# Custom GPT Action Setup
 
 ## 前置条件
 
 - 自动报价服务需要公网 HTTPS 域名；当前生产域名统一使用 `https://weilai-pxj.com`。
 - 服务端必须设置环境变量 `GPT_ACTION_TOKEN`。
 - `GPT_ACTION_TOKEN` 建议使用高强度随机值，不要写入代码仓库。
-- Custom GPT Actions 只配置 `/gpt/quote-agent`，不要配置后台、导出或审批处理接口。
+- Custom GPT Actions 使用 `docs/gpt_action_openapi.yaml` 中的安全接口，包括 `/api/quote/import` 和 `/gpt/quote-agent`；不要额外配置后台、管理、审批处理接口。
 
 ## 服务端配置
 
@@ -19,6 +19,7 @@ GPT_ACTION_TOKEN=replace-with-a-long-random-token
 
 ```text
 https://weilai-pxj.com/gpt/quote-agent
+https://weilai-pxj.com/api/quote/import
 ```
 
 该接口只接受 `POST` 和 JSON object。
@@ -42,7 +43,7 @@ https://weilai-pxj.com/gpt/quote-agent
 
 在 Custom GPT 中按顺序测试：
 
-1. 上传或提供一份报价资料，让系统创建报价草稿。
+1. 上传或提供一份报价资料，让 GPT 计算并调用 `importQuoteSheet` 生成系统报价单预览/下载链接。
 2. 输入：`数量改300`
    - 期望：调用 quoteAgent，返回报价草稿已更新，并由系统重新计算。
 3. 输入：`PU料按6.5`
@@ -103,9 +104,9 @@ logs/gpt_action_audit.jsonl
 
 ### GPT 没调用 Action 而自己回答
 
-- 检查 Instructions 是否包含“报价、改价、重新计算、保存都必须调用 quoteAgent Action”。
-- 在用户话术中明确要求“请调用系统报价引擎重新计算”。
-- 确认 Action 已启用且 schema 中 operationId 是 `quoteAgent`。
+- 检查 Instructions 是否包含“导出/下载报价单必须调用系统报价单 Action，不允许本地生成 Excel/PDF/HTML”。
+- 检查 schema 中有 `operationId: importQuoteSheet` 和 `operationId: quoteAgent`。
+- 如果系统报价单接口失败，GPT 应提示失败并重试或先保存记录，不能给用户生成临时 Excel。
 
 ### 系统返回 clarify
 

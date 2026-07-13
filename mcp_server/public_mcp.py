@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import os
 import importlib.util
-import re
 import sys
 import threading
 import types
@@ -77,7 +77,6 @@ from mcp_server.tools.quote_archive import quote_archive as _quote_archive
 from mcp_server.tools.quote_get_detail import quote_get_detail as _quote_get_detail
 from mcp_server.tools.quote_get_history import quote_get_history as _quote_get_history
 from mcp_server.tools.quote_sheet_preview import quote_sheet_preview as _quote_sheet_preview
-from mcp_server.tools.price_lookup import price_lookup as _price_lookup
 from quote_sheet_export_validate import validate_quote_sheet_export_payload
 from quote_sheet_i18n import (
     get_quote_sheet_terms_public,
@@ -172,7 +171,6 @@ PUBLIC_TOOL_REGISTRY: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "quote_get_detail": _quote_get_detail,
     "quote_sheet_preview": _quote_sheet_preview,
     "quote_approval_status": _quote_approval_status,
-    "price_lookup": _price_lookup,
 }
 
 
@@ -217,116 +215,6 @@ def _ensure_input(input_data: dict[str, Any] | None) -> dict[str, Any]:
 
 def _call_public_tool(tool_name: str, input_data: dict[str, Any] | None) -> dict[str, Any]:
     return PUBLIC_TOOL_REGISTRY[tool_name](_ensure_input(input_data))
-
-
-def _public_price_lookup_input(input_data: dict[str, Any] | None) -> dict[str, Any]:
-    payload = dict(_ensure_input(input_data))
-    user_context = payload.get("user_context")
-    if not isinstance(user_context, dict) or not str(user_context.get("role") or "").strip():
-        payload["user_context"] = {
-            "role": "sales",
-            "user_id": "gpt_action",
-            "user_name": "gpt_action",
-            "sales_user_id": "gpt_action",
-            "sales_user_name": "gpt_action",
-        }
-    return payload
-
-
-def _call_public_price_lookup(input_data: dict[str, Any] | None) -> dict[str, Any]:
-    return _price_lookup(_public_price_lookup_input(input_data))
-
-
-PUBLIC_TOOL_REGISTRY["price_lookup"] = _call_public_price_lookup
-
-
-def _string_values(value: Any) -> list[str]:
-    if isinstance(value, str):
-        text = value.strip()
-        return [text] if text else []
-    if isinstance(value, dict):
-        out: list[str] = []
-        for item in value.values():
-            out.extend(_string_values(item))
-        return out
-    if isinstance(value, list):
-        out = []
-        for item in value:
-            out.extend(_string_values(item))
-        return out
-    return []
-
-
-def _looks_like_material_price_query(text: str) -> bool:
-    compact = re.sub(r"\s+", "", text or "")
-    if not compact:
-        return False
-    price_intent = any(word in compact for word in ("知识库", "价格", "单价", "查价", "多少钱", "材料价"))
-    material_hint = bool(
-        re.search(r"\d+(?:\.\d+)?\s*(?:D|#|MM|CM|M|码|米|寸)", compact, re.IGNORECASE)
-        or any(word in compact for word in ("布", "PVC", "PU", "PEVA", "EPE", "拉链", "织带", "D扣", "五金", "纸箱", "胶袋"))
-    )
-    return material_hint and (price_intent or "历史" not in compact)
-
-
-def _material_query_from_legacy_history(input_data: dict[str, Any] | None) -> dict[str, Any] | None:
-    payload = _ensure_input(input_data)
-    query = payload.get("query") if isinstance(payload.get("query"), dict) else {}
-    if any(str(query.get(key) or "").strip() for key in ("quote_uid", "calc_quote_id", "quote_id", "version_id")):
-        return None
-
-    name = str(
-        query.get("name")
-        or query.get("material")
-        or query.get("material_name")
-        or query.get("keyword")
-        or payload.get("name")
-        or payload.get("material")
-        or payload.get("keyword")
-        or ""
-    ).strip()
-    spec = str(query.get("spec") or payload.get("spec") or "").strip()
-    text = " ".join(_string_values({"payload": payload, "query": query}))
-    candidate = name or text
-    if not _looks_like_material_price_query(candidate):
-        return None
-
-    material_match = re.search(
-        r"([A-Za-z0-9#.\-]*\d+(?:\.\d+)?\s*(?:D|#|MM|CM|M|码|米|寸)\s*[\u4e00-\u9fffA-Za-z0-9#.\-/]{0,24})",
-        candidate,
-        re.IGNORECASE,
-    )
-    if material_match:
-        name = material_match.group(1)
-    for sep in ("查询", "查一下", "查", "看看"):
-        if sep in name:
-            name = name.split(sep)[-1]
-    name = re.split(r"(?:的)?(?:价格|单价|多少钱|查价)", name, maxsplit=1)[0]
-    for stop in ("不能AI暂估", "不能暂估", "来源", "必须", "报价", "历史"):
-        if stop in name:
-            name = name.split(stop, 1)[0]
-    for noise in ("请", "调用", "后台", "知识库", "材料"):
-        name = name.replace(noise, "")
-    name = re.sub(r"[，。！？、:：；;,.!?()\[\]{}<>《》\"'“”‘’]", "", name).strip()
-    if not name:
-        return None
-    if not spec:
-        spec_match = re.search(r"\d+(?:\.\d+)?\s*(?:D|#|MM|CM|M|码|米|寸)", name, re.IGNORECASE)
-        spec = spec_match.group(0) if spec_match else ""
-    return {"query": {"name": name[:80], "spec": spec, "limit": 5, "min_score": 0.1}}
-
-
-def _call_public_quote_history(input_data: dict[str, Any] | None) -> dict[str, Any]:
-    price_query = _material_query_from_legacy_history(input_data)
-    if price_query is not None:
-        result = _call_public_price_lookup(price_query)
-        result["legacy_tool"] = "quote_history"
-        result["assistant_hint"] = "这是材料知识库价格查询结果，不是历史报价记录。"
-        return result
-    return _quote_get_history(_ensure_input(input_data))
-
-
-PUBLIC_TOOL_REGISTRY["quote_history"] = _call_public_quote_history
 
 
 def _load_public_quote_sheet_prefill_for_route(token: str) -> dict[str, Any]:
@@ -387,6 +275,52 @@ async def _request_json(request: Request) -> Any:
         return await request.json()
     except Exception:
         return {}
+
+
+def _extract_bearer_token(authorization: str | None) -> str:
+    text = str(authorization or "").strip()
+    prefix = "Bearer "
+    if not text.startswith(prefix):
+        return ""
+    return text[len(prefix) :].strip()
+
+
+def _gpt_action_authorized(request: Request) -> bool:
+    expected = str(os.environ.get("GPT_ACTION_TOKEN") or "").strip()
+    provided = _extract_bearer_token(request.headers.get("authorization"))
+    return bool(expected and provided and hmac.compare_digest(expected, provided))
+
+
+def _request_origin(request: Request) -> str:
+    host = str(
+        request.headers.get("x-forwarded-host")
+        or request.headers.get("host")
+        or ""
+    ).split(",", 1)[0].strip()
+    if not host:
+        return ""
+    proto = str(request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    if proto not in {"http", "https"}:
+        proto = request.url.scheme or "https"
+    return f"{proto}://{host}"
+
+
+def _absolute_route_url(request: Request, value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or text.lower().startswith(("http://", "https://")):
+        return text
+    if not text.startswith("/"):
+        text = f"/{text}"
+    origin = _request_origin(request)
+    return f"{origin}{text}" if origin else text
+
+
+def _quote_import_response_urls(request: Request, result: dict[str, Any]) -> dict[str, Any]:
+    out = dict(result)
+    for key in ("preview_url", "download_url"):
+        if key in out:
+            out[key] = _absolute_route_url(request, out.get(key))
+    return out
 
 
 def _static_response(path: Path) -> Response:
@@ -586,6 +520,55 @@ async def public_quote_sheet_prefill(request: Request) -> Response:
     return JSONResponse(payload)
 
 
+@mcp.custom_route("/api/quote/import", methods=["POST"], include_in_schema=False)
+async def public_quote_import(request: Request) -> Response:
+    if not _gpt_action_authorized(request):
+        return JSONResponse(
+            {"success": False, "error": "unauthorized", "message": "未授权的 GPT Action 调用。"},
+            status_code=401,
+        )
+    payload = await _request_json(request)
+    if not isinstance(payload, dict):
+        return JSONResponse(
+            {"success": False, "error": "invalid_request", "message": "请求体须为 JSON 对象。"},
+            status_code=400,
+        )
+    user_context = payload.get("user_context") if isinstance(payload.get("user_context"), dict) else {}
+    sales_uid = str(
+        user_context.get("sales_user_id")
+        or user_context.get("user_id")
+        or payload.get("sales_user_id")
+        or payload.get("salesperson")
+        or "gpt_action"
+    ).strip()
+    sales_name = str(
+        user_context.get("sales_user_name")
+        or user_context.get("user_name")
+        or payload.get("sales_user_name")
+        or payload.get("salesperson")
+        or sales_uid
+    ).strip()
+    try:
+        from quote_import_store import import_quote_payload
+
+        result = import_quote_payload(
+            payload,
+            sales_user_id=sales_uid,
+            sales_user_name=sales_name,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            {"success": False, "error": "invalid_request", "message": str(exc)},
+            status_code=400,
+        )
+    except Exception as exc:
+        return JSONResponse(
+            {"success": False, "error": "import_failed", "message": str(exc)},
+            status_code=500,
+        )
+    return JSONResponse(_quote_import_response_urls(request, result))
+
+
 @mcp.custom_route("/api/quote-sheet/payment-accounts", methods=["GET"], include_in_schema=False)
 async def public_payment_accounts(request: Request) -> Response:
     del request
@@ -651,7 +634,14 @@ def quote_archive(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
     return _call_public_tool("quote_archive", input_data)
 
 
-@mcp.tool(description="Build a saved quote sheet preview URL and controlled prefill summary.")
+@mcp.tool(
+    description=(
+        "Build the original system quote-sheet preview/download URL from GPT-prepared product rows "
+        "or a saved quote record. Use this for quote-sheet preview or export. If it fails, report the "
+        "failure and retry or ask the user to save first; never create a local Excel, PDF, HTML, or "
+        "spreadsheet preview as a replacement."
+    )
+)
 def quote_sheet_preview(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
     return _call_public_tool("quote_sheet_preview", input_data)
 
@@ -659,11 +649,6 @@ def quote_sheet_preview(input_data: dict[str, Any] | None = None) -> dict[str, A
 @mcp.tool(description="Readonly approval status and admin feedback summary for a saved quote.")
 def quote_approval_status(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
     return _call_public_tool("quote_approval_status", input_data)
-
-
-@mcp.tool(description="Readonly material price lookup from the official material knowledge base.")
-def price_lookup(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
-    return _call_public_price_lookup(input_data)
 
 
 def main() -> None:

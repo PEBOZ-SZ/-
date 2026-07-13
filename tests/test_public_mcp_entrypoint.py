@@ -23,44 +23,6 @@ def test_public_mcp_exposes_quote_sheet_payment_account_helpers() -> None:
     assert "candidates" in result
 
 
-def test_public_mcp_exposes_readonly_price_lookup_for_gpt() -> None:
-    import mcp_server.public_mcp as public_mcp
-    from price_kb import reset_price_kb
-
-    reset_price_kb()
-    assert "price_lookup" in public_mcp.PUBLIC_TOOL_REGISTRY
-
-    result = public_mcp.PUBLIC_TOOL_REGISTRY["price_lookup"](
-        {"query": {"name": "600D牛津布", "spec": "600D", "limit": 3, "min_score": 0.1}}
-    )
-
-    assert result["ok"] is True
-    hits = result["result"]["hits"]
-    assert hits
-    assert hits[0]["name"] == "600D牛津布"
-    assert hits[0]["price"] == "8元/码"
-    assert hits[0]["unit_price_value"] == 8
-
-
-def test_public_mcp_legacy_quote_history_routes_material_price_query_to_kb() -> None:
-    import mcp_server.public_mcp as public_mcp
-    from price_kb import reset_price_kb
-
-    reset_price_kb()
-    result = public_mcp.quote_history(
-        {"query": {"keyword": "请查询知识库价格：600D牛津布，不能AI暂估"}}
-    )
-
-    assert result["ok"] is True
-    assert result["tool"] == "price_lookup"
-    assert result["legacy_tool"] == "quote_history"
-    assert "知识库价格" in result["assistant_hint"]
-    hits = result["result"]["hits"]
-    assert hits
-    assert hits[0]["name"] == "600D牛津布"
-    assert hits[0]["price"] == "8元/码"
-
-
 def test_public_mcp_serves_quote_sheet_translate_en_as_json() -> None:
     import mcp_server.public_mcp as public_mcp
 
@@ -111,3 +73,55 @@ def test_public_mcp_serves_quote_sheet_validate_export_as_json() -> None:
     payload = resp.json()
     assert payload["export_lang"] == "en"
     assert "issues" in payload
+
+
+def test_public_mcp_quote_import_route_receives_gpt_rows(monkeypatch) -> None:
+    monkeypatch.setenv("GPT_ACTION_TOKEN", "secret")
+
+    import quote_import_store
+    import mcp_server.public_mcp as public_mcp
+
+    captured = {}
+
+    def fake_import_quote_payload(payload, *, sales_user_id=None, sales_user_name=None):
+        captured["payload"] = payload
+        captured["sales_user_id"] = sales_user_id
+        captured["sales_user_name"] = sales_user_name
+        return {
+            "success": True,
+            "quote_id": "gpt-import-public-test",
+            "quote_no": payload["quote_no"],
+            "quote_uid": payload["quote_no"],
+            "version_no": 1,
+            "preview_url": "/?view=quoteSheet&quote_uid=GPT-PUBLIC-001",
+            "download_url": "/?view=quoteSheet&quote_uid=GPT-PUBLIC-001&exportMode=pdf_rmb",
+        }
+
+    monkeypatch.setattr(quote_import_store, "import_quote_payload", fake_import_quote_payload)
+
+    client = TestClient(public_mcp.mcp.streamable_http_app())
+    wrong = client.post(
+        "/api/quote/import",
+        json={"quote_no": "GPT-PUBLIC-001", "products": [{"name": "Lunch Bag"}]},
+        headers={"Authorization": "Bearer wrong"},
+    )
+    ok = client.post(
+        "/api/quote/import",
+        json={
+            "quote_no": "GPT-PUBLIC-001",
+            "salesperson": "08",
+            "products": [{"name": "Lunch Bag", "qty": 500, "price": 18.6, "total": 9300}],
+        },
+        headers={"Authorization": "Bearer secret", "Host": "autoquote-mcp.example"},
+    )
+
+    assert wrong.status_code == 401
+    assert ok.status_code == 200
+    body = ok.json()
+    assert body["success"] is True
+    assert body["quote_uid"] == "GPT-PUBLIC-001"
+    assert body["preview_url"] == "http://autoquote-mcp.example/?view=quoteSheet&quote_uid=GPT-PUBLIC-001"
+    assert body["download_url"].endswith("exportMode=pdf_rmb")
+    assert captured["sales_user_id"] == "08"
+    assert captured["sales_user_name"] == "08"
+    assert captured["payload"]["products"][0]["name"] == "Lunch Bag"

@@ -3,10 +3,17 @@ info:
   title: Auto Quote Agent Action
   version: 0.3.0
   description: >
-    Safe Custom GPT Action gateway for quote drafts. The Action can create or
-    update a draft, request recalculation through the existing quote engine,
-    and submit a confirmed draft for pending review. It does not expose
-    internal management, export, or final review endpoints.
+    Safe Custom GPT Action gateway for quote drafts and original quote-sheet
+    handoff. The Action can import GPT-prepared customer quotation rows into
+    the existing quote-sheet form, return the system preview/download URLs,
+    create or update a draft, request recalculation through the existing quote
+    engine, and submit a confirmed draft for pending review. When the user asks
+    to preview, export, or download a quotation sheet, the GPT must return only
+    the system quote-sheet URL from this Action. If the Action fails or does not
+    return preview_url/download_url, the GPT must report the failure and retry
+    or ask the user to save first. The GPT must never create a local Excel,
+    PDF, HTML, spreadsheet preview, or alternate quotation template as a
+    fallback.
 servers:
   - url: https://weilai-pxj.com
 paths:
@@ -17,9 +24,13 @@ paths:
       description: >
         Use this after the GPT has parsed an Excel/BOM into customer quotation
         form rows. The backend stores the rows as an existing quote record and
-        returns a quote-sheet preview URL. The GPT must not invent final prices
-        after import; the salesperson opens the existing quotation form, reviews
-        it, and uses the page's normal PDF export.
+        returns original system quote-sheet preview_url and download_url. The
+        GPT must not invent final prices after import; the salesperson opens
+        the existing quotation form, reviews it, and uses the page's normal PDF
+        export. If this Action returns an error or no system URL, do not create
+        a temporary Excel/PDF/HTML file and do not show a ChatGPT spreadsheet
+        preview. Tell the user the system quote-sheet export failed, then retry
+        this Action or ask the user to save/generate a backend record first.
       security:
         - bearerAuth: []
       requestBody:
@@ -64,6 +75,7 @@ paths:
                     quote_uid: "B260160"
                     version_no: 1
                     preview_url: "/?view=quoteSheet&quote_uid=B260160"
+                    download_url: "/?view=quoteSheet&quote_uid=B260160&exportMode=pdf_rmb"
         "400":
           description: Invalid import payload.
           content:
@@ -421,6 +433,10 @@ components:
           nullable: true
         preview_url:
           type: string
+          description: Original system quote-sheet preview URL. Return this URL to the user; do not replace it with a generated file.
+        download_url:
+          type: string
+          description: Original system quote-sheet download/export URL. Return this URL to the user; do not create a local Excel/PDF/HTML fallback.
     QuoteImportError:
       type: object
       additionalProperties: true
@@ -450,8 +466,8 @@ components:
           enum:
             - quote_updated
             - clarify
-            - price_lookup
             - saved
+            - quote_sheet
             - error
         assistant_message:
           type: string
@@ -479,4 +495,18 @@ components:
             - object
             - "null"
           additionalProperties: true
+        quote_sheet:
+          type:
+            - object
+            - "null"
+          additionalProperties: true
+          description: System quote-sheet preview/export metadata when type is quote_sheet.
+        preview_url:
+          type: string
+          nullable: true
+          description: System quote-sheet preview URL. Return this URL to the user; do not replace it with a generated file.
+        download_url:
+          type: string
+          nullable: true
+          description: System quote-sheet download/export URL. Return this URL to the user; do not create a local Excel/PDF/HTML fallback.
 
